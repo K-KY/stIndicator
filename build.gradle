@@ -1,0 +1,42 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '4.0.3'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'st.indicator'
+version = '0.0.1-SNAPSHOT'
+description = 'stIndicator'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = "GitHubPackages"
+        url = uri("https://maven.pkg.github.com/K-KY/tredeTools")
+
+        credentials {
+            username = project.findProperty("gpr.user")
+            print(username)
+            password = project.findProperty("gpr.key")
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.github.k-ky:tredtools:0.0.4'
+    implementation 'com.fasterxml.jackson.core:jackson-core'
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    developmentOnly 'org.springframework.boot:spring-boot-devtools'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
