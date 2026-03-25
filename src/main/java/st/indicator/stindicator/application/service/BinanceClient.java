@@ -3,6 +3,7 @@ package st.indicator.stindicator.application.service;
 import com.java.candle.Candle;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.dto.CandleCommand;
+import st.indicator.stindicator.application.exception.BalanceFetchFailException;
 import st.indicator.stindicator.application.exception.CandleFetchFailException;
 import st.indicator.stindicator.infra.connector.exchange.ExchangeConnector;
 
@@ -20,9 +21,13 @@ public class BinanceClient implements ClientService {
         this.exchangeConnector = exchangeConnector;
     }
     @Override
-    public BigDecimal getBalance() throws IOException, NoSuchAlgorithmException, InvalidKeyException, InterruptedException {
+    public BigDecimal getBalance() {
         long currentTimeMillis = System.currentTimeMillis();
-        return exchangeConnector.getBalance(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+        try {
+            return exchangeConnector.getBalance(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new BalanceFetchFailException(e, "지갑 조회 실패");
+        }
     }
 
     @Override
