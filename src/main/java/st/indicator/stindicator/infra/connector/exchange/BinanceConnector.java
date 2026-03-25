@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
@@ -16,6 +17,7 @@ import java.util.Map;
 public class BinanceConnector implements ExchangeConnector {
     private static final String CANDLE_PATH = "https://fapi.binance.com/fapi/v1/klines";
     private static final String ACCOUNT_PATH = "https://fapi.binance.com/fapi/v2/account";
+    private static final String ORDER_PATH = "https://fapi.binance.com/fapi/v1/order";
     private static final String TOTAL_WALLET_BALANCE = "totalWalletBalance";
     private static final CandleMapper candleMapper = new CandleMapper();
     private final ExchangeClient exchangeClient;
@@ -36,5 +38,20 @@ public class BinanceConnector implements ExchangeConnector {
             InvalidKeyException, InterruptedException {
         String s = exchangeClient.get(ACCOUNT_PATH, params);
         return BigDecimal.valueOf(objectMapper.readTree(s).get(TOTAL_WALLET_BALANCE).doubleValue());
+    }
+
+    @Override
+    public void orders() {
+
+    }
+
+    @Override
+    public void sell() {
+
+    }
+
+    @Override
+    public void buy() {
+
     }
 }
