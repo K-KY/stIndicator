@@ -2,7 +2,8 @@ package st.indicator.stindicator.application.service;
 
 import com.java.candle.Candle;
 import org.springframework.stereotype.Service;
-import st.indicator.stindicator.application.dto.CandleRequestDto;
+import st.indicator.stindicator.application.dto.CandleCommand;
+import st.indicator.stindicator.application.exception.CandleFetchFailException;
 import st.indicator.stindicator.infra.connector.exchange.ExchangeConnector;
 
 import java.io.IOException;
@@ -25,15 +26,18 @@ public class BinanceClient implements ClientService {
     }
 
     @Override
-    public List<Candle> getCandles(CandleRequestDto dto)
-            throws IOException, NoSuchAlgorithmException, InvalidKeyException, InterruptedException {
-        return exchangeConnector.getCandles(
-                Map.of(
-                        "symbol", dto.getSymbol(),
-                        "interval", dto.getInterval(),
-                        "limit", dto.getLimit()
-                )
-        );
+    public List<Candle> getCandles(CandleCommand dto) {
+        try {
+            return exchangeConnector.getCandles(
+                    Map.of(
+                            "symbol", dto.getSymbol(),
+                            "interval", dto.getInterval(),
+                            "limit", dto.getLimit()
+                    )
+            );
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new CandleFetchFailException(e, "캔들 조회 실패");
+        }
     }
 
     @Override
