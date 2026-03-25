@@ -1,11 +1,11 @@
 package st.indicator.stindicator.application.dto;
 
-public class CandleRequestDto {
+public class CandleCommand {
     String symbol;
     String interval;
     String limit;
 
-    public CandleRequestDto(String symbol, String interval, String limit) {
+    public CandleCommand(String symbol, String interval, String limit) {
         this.symbol = symbol;
         this.interval = interval;
         this.limit = limit;
