@@ -29,7 +29,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.github.k-ky:tredtools:0.0.4'
+    implementation 'com.github.k-ky:tredtools:0.0.5'
     implementation 'com.fasterxml.jackson.core:jackson-core'
     implementation 'org.springframework.boot:spring-boot-starter-webmvc'
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
