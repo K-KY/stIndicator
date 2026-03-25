@@ -3,14 +3,11 @@ package st.indicator.stindicator.application.service;
 import com.java.candle.Candle;
 import st.indicator.stindicator.application.dto.CandleCommand;
 
-import java.io.IOException;
 import java.math.BigDecimal;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
 public interface ClientService {
-    BigDecimal getBalance() throws IOException, NoSuchAlgorithmException, InvalidKeyException, InterruptedException;//자산 조회
+    BigDecimal getBalance();//지갑 조회
     List<Candle> getCandles(CandleCommand dto);//캔들 데이터 조회
     void buy();//구매
     void sell();//판매
