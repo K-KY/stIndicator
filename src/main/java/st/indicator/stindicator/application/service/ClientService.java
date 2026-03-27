@@ -9,6 +9,7 @@ import java.util.List;
 public interface ClientService {
     BigDecimal getBalance();//지갑 조회
     List<Candle> getCandles(CandleCommand dto);//캔들 데이터 조회
+    BigDecimal getAtr(CandleCommand dto);
     void buy();//구매
     void sell();//판매
     void getOrders();//주문 목록 조회
