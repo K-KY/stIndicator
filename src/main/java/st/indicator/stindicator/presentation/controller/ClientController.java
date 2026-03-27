@@ -27,4 +27,9 @@ public class ClientController {
     public BigDecimal getBalance() {
         return clientService.getBalance();
     }
+
+    @GetMapping("atrs")
+    public BigDecimal getAtr(CandleRequestDto dto) {
+        return clientService.getAtr(dto.toCommand());
+    }
 }

@@ -1,5 +1,6 @@
 package st.indicator.stindicator.application.service;
 
+import com.java.calculator.AtrCalculator;
 import com.java.candle.Candle;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.dto.CandleCommand;
@@ -43,6 +44,13 @@ public class BinanceClient implements ClientService {
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new CandleFetchFailException(e, "캔들 조회 실패");
         }
+    }
+
+    @Override
+    public BigDecimal getAtr(CandleCommand dto) {
+        AtrCalculator atrCalculator = new AtrCalculator();
+        atrCalculator.execute(getCandles(dto), 14);
+        return null;
     }
 
     @Override
