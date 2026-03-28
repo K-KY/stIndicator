@@ -12,7 +12,7 @@ public class Order {
     BigDecimal avgPrice;
     BigDecimal origQty;
     BigDecimal executedQty;
-    BigDecimal cumQtx,y;
+    BigDecimal cumQty;
     BigDecimal cumQuote;
     String timeInForce;
     String type;
