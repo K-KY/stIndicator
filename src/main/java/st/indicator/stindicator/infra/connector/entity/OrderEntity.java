@@ -3,11 +3,76 @@ package st.indicator.stindicator.infra.connector.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import st.indicator.stindicator.domain.entity.Order;
 
 import java.math.BigDecimal;
 
 @Entity
 public class OrderEntity {
+    public OrderEntity() {
+    }
+
+    public OrderEntity(String orderId, String symbol, String status,
+                       String clientOrderId, BigDecimal price, BigDecimal avgPrice,
+                       BigDecimal origQty, BigDecimal executedQty, BigDecimal cumQty,
+                       BigDecimal cumQuote, String timeInForce, String type,
+                       Boolean reduceOnly, Boolean closePosition, String side,
+                       String positionSide, BigDecimal stopPrice, String workingType,
+                       Boolean priceProtect, String origType, String priceMatch,
+                       String selfTradePreventionMode, Integer goodTillDate, String updateTime) {
+        this.orderId = orderId;
+        this.symbol = symbol;
+        this.status = status;
+        this.clientOrderId = clientOrderId;
+        this.price = price;
+        this.avgPrice = avgPrice;
+        this.origQty = origQty;
+        this.executedQty = executedQty;
+        this.cumQty = cumQty;
+        this.cumQuote = cumQuote;
+        this.timeInForce = timeInForce;
+        this.type = type;
+        this.reduceOnly = reduceOnly;
+        this.closePosition = closePosition;
+        this.side = side;
+        this.positionSide = positionSide;
+        this.stopPrice = stopPrice;
+        this.workingType = workingType;
+        this.priceProtect = priceProtect;
+        this.origType = origType;
+        this.priceMatch = priceMatch;
+        this.selfTradePreventionMode = selfTradePreventionMode;
+        this.goodTillDate = goodTillDate;
+        this.updateTime = updateTime;
+    }
+
+    public OrderEntity(Order order) {
+        this.orderId = order.getOrderId();
+        this.symbol = order.getSymbol();
+        this.status = order.getStatus();
+        this.clientOrderId = order.getClientOrderId();
+        this.price = order.getPrice();
+        this.avgPrice = order.getAvgPrice();
+        this.origQty = order.getOrigQty();
+        this.clientOrderId = order.getClientOrderId();
+        this.executedQty = order.getExecutedQty();
+        this.cumQty = order.getCumQty();
+        this.cumQuote = order.getCumQuote();
+        this.timeInForce = order.getTimeInForce();
+        this.type = order.getType();
+        this.reduceOnly = order.getReduceOnly();
+        this.closePosition = order.getClosePosition();
+        this.side = order.getSide();
+        this.positionSide = order.getPositionSide();
+        this.stopPrice = order.getStopPrice();
+        this.workingType = order.getWorkingType();
+        this.priceProtect = order.getPriceProtect();
+        this.origType = order.getOrigType();
+        this.priceMatch = order.getPriceMatch();
+        this.selfTradePreventionMode = order.getSelfTradePreventionMode();
+        this.goodTillDate = order.getGoodTillDate();
+        this.updateTime = order.getUpdateTime();
+    }
 
     @Id
     String orderId;
@@ -96,6 +161,6 @@ public class OrderEntity {
     Integer goodTillDate;
     // GTD 주문 만료 시간 (거의 안 씀)
 
-    String updateTime;
     // 마지막 업데이트 시간 (timestamp)
+    String updateTime;
 }
