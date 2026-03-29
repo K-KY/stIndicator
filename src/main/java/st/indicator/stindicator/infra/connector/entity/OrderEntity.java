@@ -1,5 +1,6 @@
 package st.indicator.stindicator.infra.connector.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -8,6 +9,7 @@ import st.indicator.stindicator.domain.entity.Order;
 import java.math.BigDecimal;
 
 @Entity
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class OrderEntity {
     public OrderEntity() {
     }
