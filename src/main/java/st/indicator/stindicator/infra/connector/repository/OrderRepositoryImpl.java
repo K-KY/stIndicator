@@ -9,10 +9,10 @@ import st.indicator.stindicator.infra.connector.entity.OrderEntity;
 import java.util.List;
 
 @Repository
-public class OrderJpaRepositoryImpl implements OrderRepository {
+public class OrderRepositoryImpl implements OrderRepository {
     private final OrderJpaRepository jpaRepository;
 
-    public OrderJpaRepositoryImpl(OrderJpaRepository jpaRepository) {
+    public OrderRepositoryImpl(OrderJpaRepository jpaRepository) {
         this.jpaRepository = jpaRepository;
     }
 
