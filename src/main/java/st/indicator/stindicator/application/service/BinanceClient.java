@@ -4,6 +4,7 @@ import com.java.calculator.AtrCalculator;
 import com.java.candle.Candle;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.dto.CandleCommand;
+import st.indicator.stindicator.application.dto.OrderCommand;
 import st.indicator.stindicator.application.exception.BalanceFetchFailException;
 import st.indicator.stindicator.application.exception.CandleFetchFailException;
 import st.indicator.stindicator.infra.connector.exchange.ExchangeConnector;
@@ -54,12 +55,7 @@ public class BinanceClient implements ClientService {
     }
 
     @Override
-    public void buy() {
-
-    }
-
-    @Override
-    public void sell() {
+    public void order(OrderCommand dto) {
 
     }
 
