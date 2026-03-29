@@ -165,4 +165,100 @@ public class OrderEntity {
 
     // 마지막 업데이트 시간 (timestamp)
     String updateTime;
+
+    public String getOrderId() {
+        return orderId;
+    }
+
+    public String getSymbol() {
+        return symbol;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public String getClientOrderId() {
+        return clientOrderId;
+    }
+
+    public BigDecimal getPrice() {
+        return price;
+    }
+
+    public BigDecimal getAvgPrice() {
+        return avgPrice;
+    }
+
+    public BigDecimal getOrigQty() {
+        return origQty;
+    }
+
+    public BigDecimal getExecutedQty() {
+        return executedQty;
+    }
+
+    public BigDecimal getCumQty() {
+        return cumQty;
+    }
+
+    public BigDecimal getCumQuote() {
+        return cumQuote;
+    }
+
+    public String getTimeInForce() {
+        return timeInForce;
+    }
+
+    public String getType() {
+        return type;
+    }
+
+    public Boolean getReduceOnly() {
+        return reduceOnly;
+    }
+
+    public Boolean getClosePosition() {
+        return closePosition;
+    }
+
+    public String getSide() {
+        return side;
+    }
+
+    public String getPositionSide() {
+        return positionSide;
+    }
+
+    public BigDecimal getStopPrice() {
+        return stopPrice;
+    }
+
+    public String getWorkingType() {
+        return workingType;
+    }
+
+    public Boolean getPriceProtect() {
+        return priceProtect;
+    }
+
+    public String getOrigType() {
+        return origType;
+    }
+
+    public String getPriceMatch() {
+        return priceMatch;
+    }
+
+    public String getSelfTradePreventionMode() {
+        return selfTradePreventionMode;
+    }
+
+    public Integer getGoodTillDate() {
+        return goodTillDate;
+    }
+
+    public String getUpdateTime() {
+        return updateTime;
+    }
 }
