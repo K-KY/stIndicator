@@ -16,6 +16,5 @@ public interface ExchangeConnector {
     BigDecimal getBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException;
     void orders();
-    void sell();
-    void buy();
+    void order();
 }
