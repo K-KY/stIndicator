@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -42,12 +41,21 @@ public class BinanceConnector implements ExchangeConnector {
     }
 
     @Override
-    public void orders() {
-
+    public void order(Map<String, String> params) {
+        try {
+            exchangeClient.post(ORDER_PATH, params);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        } catch (InvalidKeyException e) {
+            throw new RuntimeException(e);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
-    public void order() {
-
+    public void orders() {
     }
 }
