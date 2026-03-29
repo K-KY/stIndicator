@@ -38,7 +38,7 @@ public class BinanceConnector implements ExchangeConnector {
     public BigDecimal getBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String s = exchangeClient.get(ACCOUNT_PATH, params);
-        return BigDecimal.valueOf(objectMapper.readTree(s).get(TOTAL_WALLET_BALANCE).doubleValue());
+        return BigDecimal.valueOf(objectMapper.readTree(s).get(TOTAL_WALLET_BALANCE).asDouble());
     }
 
     @Override
