@@ -1,23 +1,29 @@
 package st.indicator.stindicator.domain.entity;
 
 public class UserOrder {
-    String symbol;
-    String side;
-    String type;
-    String timeInForce;
-    String quantity;
-    String price;
+    private String orderId;
+    private String symbol;
+    private String side;
+    private String type;
+    private String timeInForce;
+    private String quantity;
+    private String price;
 
     public UserOrder() {
     }
 
-    public UserOrder(String symbol, String side, String type, String timeInForce, String quantity, String price) {
+    public UserOrder(String orderId, String symbol, String side, String type, String timeInForce, String quantity, String price) {
+        this.orderId = orderId;
         this.symbol = symbol;
         this.side = side;
         this.type = type;
         this.timeInForce = timeInForce;
         this.quantity = quantity;
         this.price = price;
+    }
+
+    public String getOrderId() {
+        return orderId;
     }
 
     public String getSymbol() {
