@@ -1,37 +1,27 @@
 package st.indicator.stindicator.infra.connector.repository;
 
-import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Repository;
-import st.indicator.stindicator.domain.entity.Order;
+import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.domain.repository.OrderRepository;
-import st.indicator.stindicator.infra.connector.entity.OrderEntity;
-
-import java.util.List;
+import st.indicator.stindicator.infra.connector.entity.UserOrderEntity;
 
 @Repository
 public class OrderRepositoryImpl implements OrderRepository {
-    private final OrderJpaRepository jpaRepository;
+    private final OrderJpaRepository orderRepository;
 
-    public OrderRepositoryImpl(OrderJpaRepository jpaRepository) {
-        this.jpaRepository = jpaRepository;
+    public OrderRepositoryImpl(OrderJpaRepository orderRepository) {
+        this.orderRepository = orderRepository;
     }
 
     @Override
-    public OrderEntity saveOrder(Order order) {
-        return jpaRepository.save(new OrderEntity(order));
+    public void saveOrder(UserOrder userOrder) {
+
+        UserOrderEntity userOrderEntity = UserOrderEntity.from(userOrder);
+        UserOrderEntity save = orderRepository.save(userOrderEntity);
     }
 
-    @Override
-    public List<OrderEntity> getOrders(Pageable pageable) {
-        return jpaRepository.findAll(pageable).toList();
-    }
-
-    @Override
-    public OrderEntity getOrder(String orderId) {
-        return jpaRepository.findById(orderId)
-                .orElseThrow(() -> new IllegalArgumentException("Order not found"));
-    }
-
+    //List<Order>getOrder -> 주문 목록 보기
+    //Orger getOrder  -> 주문 상세 보기 -> 거래소 api 호출 필요
     @Override
     public void cancelOrder(String orderId) {
 
