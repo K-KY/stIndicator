@@ -1,16 +1,14 @@
 package st.indicator.stindicator.infra.connector.entity;
 
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import st.indicator.stindicator.domain.entity.UserOrder;
 
 @Entity
 public class UserOrderEntity {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    Long id;
+    String orderId;
 
     String symbol;
     String side;
@@ -22,8 +20,8 @@ public class UserOrderEntity {
     public UserOrderEntity() {
     }
 
-    public UserOrderEntity(Long id, String symbol, String side, String type, String timeInForce, String quantity, String price) {
-        this.id = id;
+    public UserOrderEntity(String orderId, String symbol, String side, String type, String timeInForce, String quantity, String price) {
+        this.orderId = orderId;
         this.symbol = symbol;
         this.side = side;
         this.type = type;
@@ -32,8 +30,8 @@ public class UserOrderEntity {
         this.price = price;
     }
 
-    public Long getId() {
-        return id;
+    public String getOrderId() {
+        return orderId;
     }
 
     public String getSymbol() {
@@ -58,5 +56,10 @@ public class UserOrderEntity {
 
     public String getPrice() {
         return price;
+    }
+
+    public static UserOrderEntity from(UserOrder userOrder) {
+        return new UserOrderEntity(userOrder.getOrderId(), userOrder.getSymbol(), userOrder.getSide(), userOrder.getType(),
+                userOrder.getTimeInForce(), userOrder.getQuantity(), userOrder.getPrice());
     }
 }
