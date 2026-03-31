@@ -6,6 +6,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import st.indicator.stindicator.application.service.ClientService;
+import st.indicator.stindicator.application.service.OrderService;
 import st.indicator.stindicator.infra.connector.entity.OrderEntity;
 import st.indicator.stindicator.presentation.dto.CandleRequestDto;
 import st.indicator.stindicator.presentation.dto.OrderRequestDto;
@@ -17,8 +18,10 @@ import java.util.List;
 @RequestMapping("client")
 public class ClientController {
     private final ClientService clientService;
-    public ClientController(ClientService clientService) {
+    private final OrderService orderService;
+    public ClientController(ClientService clientService, OrderService orderService) {
         this.clientService = clientService;
+        this.orderService = orderService;
     }
 
     @GetMapping("candles")
@@ -38,6 +41,8 @@ public class ClientController {
 
     @PostMapping("order")
     public OrderEntity order(OrderRequestDto dto) {
-        return clientService.order(dto.toCommand());
+        OrderEntity order = clientService.order(dto.toCommand());
+        orderService.save(order.getOrderId(), dto.toCommand());// 사용자 주문 저장
+        return order;
     }
 }
