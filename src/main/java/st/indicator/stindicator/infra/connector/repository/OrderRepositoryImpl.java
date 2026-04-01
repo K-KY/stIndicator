@@ -5,6 +5,8 @@ import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.domain.repository.OrderRepository;
 import st.indicator.stindicator.infra.connector.entity.UserOrderEntity;
 
+import java.util.List;
+
 @Repository
 public class OrderRepositoryImpl implements OrderRepository {
     private final OrderJpaRepository orderRepository;
@@ -18,6 +20,11 @@ public class OrderRepositoryImpl implements OrderRepository {
 
         UserOrderEntity userOrderEntity = UserOrderEntity.from(userOrder);
         UserOrderEntity save = orderRepository.save(userOrderEntity);
+    }
+
+    @Override
+    public List<UserOrder> getOrders(String symbol) {
+        return orderRepository.findAllBySymbol(symbol);
     }
 
     //List<Order>getOrder -> 주문 목록 보기
