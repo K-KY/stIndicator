@@ -5,6 +5,8 @@ import st.indicator.stindicator.application.dto.OrderCommand;
 import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.domain.repository.OrderRepository;
 
+import java.util.List;
+
 @Service
 public class OrderService {
     private final OrderRepository orderRepository;
@@ -19,5 +21,9 @@ public class OrderService {
                         dto.getPrice(), dto.getQuantity());
         orderRepository.saveOrder(userOrder);
         return userOrder;
+    }
+
+    public List<UserOrder> getOrders(String symbol) {
+        return orderRepository.getOrders(symbol);
     }
 }
