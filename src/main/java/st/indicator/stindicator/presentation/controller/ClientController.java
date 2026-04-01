@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import st.indicator.stindicator.application.service.ClientService;
 import st.indicator.stindicator.application.service.OrderService;
+import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.infra.connector.entity.OrderEntity;
 import st.indicator.stindicator.presentation.dto.CandleRequestDto;
 import st.indicator.stindicator.presentation.dto.OrderRequestDto;
@@ -44,5 +45,10 @@ public class ClientController {
         OrderEntity order = clientService.order(dto.toCommand());
         orderService.save(order.getOrderId(), dto.toCommand());// 사용자 주문 저장
         return order;
+    }
+
+    @GetMapping("order")
+    public List<UserOrder> getOrders(String symbol /*특정 사용자,  미체결, 체결 필터 추가 되어야함,*/) {
+        return orderService.getOrders(symbol);
     }
 }
