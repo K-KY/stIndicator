@@ -4,7 +4,8 @@ import com.java.candle.Candle;
 import com.java.candle.CandleMapper;
 import com.java.client.ExchangeClient;
 import org.springframework.stereotype.Component;
-import st.indicator.stindicator.infra.connector.entity.OrderEntity;
+import st.indicator.stindicator.application.service.ExchangeConnector;
+import st.indicator.stindicator.domain.entity.Order;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -42,10 +43,10 @@ public class BinanceConnector implements ExchangeConnector {
     }
 
     @Override
-    public OrderEntity order(Map<String, String> params) {
+    public Order order(Map<String, String> params) {
         try {
             String order = exchangeClient.post(ORDER_PATH, params);
-            return objectMapper.readValue(order, OrderEntity.class);
+            return objectMapper.readValue(order, Order.class);
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         } catch (InvalidKeyException e) {
