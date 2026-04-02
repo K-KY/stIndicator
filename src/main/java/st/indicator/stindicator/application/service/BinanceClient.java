@@ -7,8 +7,7 @@ import st.indicator.stindicator.application.dto.CandleCommand;
 import st.indicator.stindicator.application.dto.OrderCommand;
 import st.indicator.stindicator.application.exception.BalanceFetchFailException;
 import st.indicator.stindicator.application.exception.CandleFetchFailException;
-import st.indicator.stindicator.infra.connector.entity.OrderEntity;
-import st.indicator.stindicator.infra.connector.exchange.ExchangeConnector;
+import st.indicator.stindicator.domain.entity.Order;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -20,6 +19,7 @@ import java.util.Map;
 @Service
 public class BinanceClient implements ClientService {
     private final ExchangeConnector exchangeConnector;
+
     public BinanceClient(ExchangeConnector exchangeConnector) {
         this.exchangeConnector = exchangeConnector;
     }
@@ -56,7 +56,7 @@ public class BinanceClient implements ClientService {
     }
 
     @Override
-    public OrderEntity order(OrderCommand dto) {
+    public Order order(OrderCommand dto) {
         long timeMillis = System.currentTimeMillis();
 
         return exchangeConnector.order(Map.of(
