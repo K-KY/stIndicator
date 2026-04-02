@@ -1,7 +1,7 @@
-package st.indicator.stindicator.infra.connector.exchange;
+package st.indicator.stindicator.application.service;
 
 import com.java.candle.Candle;
-import st.indicator.stindicator.infra.connector.entity.OrderEntity;
+import st.indicator.stindicator.domain.entity.Order;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -17,5 +17,5 @@ public interface ExchangeConnector {
     BigDecimal getBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException;
     void orders();
-    OrderEntity order(Map<String, String> params);
+    Order order(Map<String, String> params);
 }
