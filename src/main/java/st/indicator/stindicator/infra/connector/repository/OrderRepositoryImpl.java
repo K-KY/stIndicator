@@ -27,8 +27,6 @@ public class OrderRepositoryImpl implements OrderRepository {
         return orderRepository.findAllBySymbol(symbol);
     }
 
-    //List<Order>getOrder -> 주문 목록 보기
-    //Orger getOrder  -> 주문 상세 보기 -> 거래소 api 호출 필요
     @Override
     public void cancelOrder(String orderId) {
 
