@@ -16,6 +16,6 @@ public interface ExchangeConnector {
 
     BigDecimal getBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException;
-    void orders();
+    Order orderDetail(Map<String, String> params);
     Order order(Map<String, String> params);
 }

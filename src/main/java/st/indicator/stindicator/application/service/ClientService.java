@@ -9,6 +9,8 @@ import java.math.BigDecimal;
 import java.util.List;
 
 public interface ClientService {
+    Order getOrderDetail(String symbol, String orderId);//주문 상세 조회
+
     BigDecimal getBalance();//지갑 조회
     List<Candle> getCandles(CandleCommand dto);//캔들 데이터 조회
     BigDecimal getAtr(CandleCommand dto);

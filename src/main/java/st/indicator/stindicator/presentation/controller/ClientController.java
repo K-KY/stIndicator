@@ -51,4 +51,9 @@ public class ClientController {
     public List<UserOrder> getOrders(String symbol /*특정 사용자,  미체결, 체결 필터 추가 되어야함,*/) {
         return orderService.getOrders(symbol);
     }
+
+    @GetMapping("order/details")
+    public Order getOrderDetail(String symbol, String orderId) {
+        return clientService.getOrderDetail(symbol, orderId);
+    }
 }
