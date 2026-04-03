@@ -23,6 +23,7 @@ public class BinanceClient implements ClientService {
     public BinanceClient(ExchangeConnector exchangeConnector) {
         this.exchangeConnector = exchangeConnector;
     }
+
     @Override
     public BigDecimal getBalance() {
         long currentTimeMillis = System.currentTimeMillis();
@@ -74,6 +75,12 @@ public class BinanceClient implements ClientService {
     public void getOrders() {
 
     }
+
+    @Override
+    public Order getOrderDetail(String symbol, String orderId) {
+        return exchangeConnector.orderDetail(Map.of("symbol", symbol, "orderId", orderId));
+    }
+
 
     @Override
     public void getPositions() {
