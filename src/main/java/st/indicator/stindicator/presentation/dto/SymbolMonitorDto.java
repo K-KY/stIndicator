@@ -1,13 +1,15 @@
 package st.indicator.stindicator.presentation.dto;
 
+import java.util.List;
+
 public class SymbolMonitorDto {
     private String type;
-    private String symbol;
+    private List<String> symbols;
     private String interval;
 
-    public SymbolMonitorDto(String type, String symbol, String interval) {
+    public SymbolMonitorDto(String type, List<String> symbols, String interval) {
         this.type = type;
-        this.symbol = symbol;
+        this.symbols = symbols;
         this.interval = interval;
     }
 
@@ -15,8 +17,8 @@ public class SymbolMonitorDto {
         return type;
     }
 
-    public String getSymbol() {
-        return symbol;
+    public List<String> getSymbols() {
+        return symbols;
     }
 
     public String getInterval() {
