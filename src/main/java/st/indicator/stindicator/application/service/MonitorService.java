@@ -34,7 +34,7 @@ public class MonitorService {
             KlineEventDTO latest = monitorRepository.poll(symbol);
             if (latest != null) {
                 try {
-                    logger.info("Subscribe Symbol, Push Latest Data");
+                    logger.info("Subscribe Symbol, Push Latest {} Data", symbol);
                     session.sendMessage(
                             new TextMessage(objectMapper.writeValueAsString(latest))
                     );
