@@ -70,6 +70,8 @@ public class MonitorService {
     }
 
     public void unsubscribe(WebSocketSession session, SymbolMonitorDto req) {
+        logger.info("Subscribe Symbol, DisConnect Session: {}, request Symbol: {}", session.getId(), req.getSymbols());
+
         req.getSymbols().forEach(symbol -> {
             subscribers.values().forEach(sessions -> {
                 sessions.remove(session);
@@ -77,6 +79,7 @@ public class MonitorService {
         });
     }
     public void unsubscribe(WebSocketSession session) {
+        logger.info("Subscribe Symbol, DisConnect Session: {}", session.getId());
         subscribers.values().forEach(set -> set.remove(session));
     }
 }
