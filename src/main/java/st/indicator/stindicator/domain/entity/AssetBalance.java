@@ -2,6 +2,10 @@ package st.indicator.stindicator.domain.entity;
 
 import java.math.BigDecimal;
 
+/**
+ * 선물 계정 안에서 자산별 잔고 상태 엔티티
+ * 총 지갑 잔고, 즉시 주문 가능한 가용 잔고, 미실현 손익
+ */
 public class AssetBalance {
     private final String asset;
     private final BigDecimal walletBalance;

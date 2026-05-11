@@ -1,5 +1,8 @@
 package st.indicator.stindicator.domain.entity;
 
+/**
+ * 거래소에서 현재 거래 가능한 선물 심볼 정보
+ */
 public class ExchangeSymbol {
     private final String symbol;
     private final String baseAsset;

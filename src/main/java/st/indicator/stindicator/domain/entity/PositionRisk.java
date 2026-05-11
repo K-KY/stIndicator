@@ -2,6 +2,10 @@ package st.indicator.stindicator.domain.entity;
 
 import java.math.BigDecimal;
 
+/**
+ * 사용자가 보유 중인 선물 포지션의 핵심 위험 정보
+ * 진입가, 현재가, 수량, 손익, 배율 정보를 함께 전달해 청산과 모니터링에 사용
+ */
 public class PositionRisk {
     private final String symbol;
     private final BigDecimal positionAmt;
