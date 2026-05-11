@@ -5,6 +5,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.application.service.ClientService;
 import st.indicator.stindicator.application.service.OrderService;
 import st.indicator.stindicator.domain.entity.AssetBalance;
@@ -13,6 +14,7 @@ import st.indicator.stindicator.domain.entity.Order;
 import st.indicator.stindicator.domain.entity.PositionRisk;
 import st.indicator.stindicator.domain.entity.SymbolPrice;
 import st.indicator.stindicator.domain.entity.UserOrder;
+import st.indicator.stindicator.presentation.dto.AtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.CandleRequestDto;
 import st.indicator.stindicator.presentation.dto.OrderRequestDto;
 
@@ -62,6 +64,19 @@ public class ClientController {
     @GetMapping("positions")
     public List<PositionRisk> getPositions() {
         return clientService.getPositions();
+    }
+
+    @GetMapping("atr/order/preview")
+    public AtrOrderPreview previewAtrOrder(AtrOrderRequestDto dto) {
+        return clientService.previewAtrOrder(dto.toCommand());
+    }
+
+    @PostMapping("atr/order")
+    public Order orderByAtr(AtrOrderRequestDto dto) {
+        Order order = clientService.orderByAtr(dto.toCommand());
+        orderService.save(order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
+                order.getTimeInForce(), order.getOrigQty().toPlainString(), order.getPrice().toPlainString());
+        return order;
     }
 
     @PostMapping("order")

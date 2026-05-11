@@ -2,6 +2,8 @@ package st.indicator.stindicator.application.service;
 
 import com.java.candle.Candle;
 import st.indicator.stindicator.application.dto.CandleCommand;
+import st.indicator.stindicator.application.dto.AtrOrderCommand;
+import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.application.dto.OrderCommand;
 import st.indicator.stindicator.domain.entity.AssetBalance;
 import st.indicator.stindicator.domain.entity.ExchangeSymbol;
@@ -19,6 +21,8 @@ public interface ClientService {
     List<Candle> getCandles(CandleCommand dto);//캔들 데이터 조회
     BigDecimal getAtr(CandleCommand dto);
     Order order(OrderCommand dto);
+    AtrOrderPreview previewAtrOrder(AtrOrderCommand dto);
+    Order orderByAtr(AtrOrderCommand dto);
     List<AssetBalance> getAssets();
     List<ExchangeSymbol> getExchangeSymbols();
     SymbolPrice getPrice(String symbol);

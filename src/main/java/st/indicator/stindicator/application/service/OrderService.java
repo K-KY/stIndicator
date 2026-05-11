@@ -23,6 +23,13 @@ public class OrderService {
         return userOrder;
     }
 
+    public UserOrder save(String orderId, String symbol, String side, String type,
+                          String timeInForce, String quantity, String price) {
+        UserOrder userOrder = new UserOrder(orderId, symbol, side, type, timeInForce, quantity, price);
+        orderRepository.saveOrder(userOrder);
+        return userOrder;
+    }
+
     public List<UserOrder> getOrders(String symbol) {
         return orderRepository.getOrders(symbol);
     }

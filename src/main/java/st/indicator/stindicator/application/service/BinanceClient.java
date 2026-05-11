@@ -1,7 +1,9 @@
 package st.indicator.stindicator.application.service;
 
-import org.springframework.stereotype.Service;
 import com.java.candle.Candle;
+import org.springframework.stereotype.Service;
+import st.indicator.stindicator.application.dto.AtrOrderCommand;
+import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.application.dto.CandleCommand;
 import st.indicator.stindicator.application.dto.OrderCommand;
 import st.indicator.stindicator.application.exception.BalanceFetchFailException;
@@ -96,6 +98,47 @@ public class BinanceClient implements ClientService {
     }
 
     @Override
+    public AtrOrderPreview previewAtrOrder(AtrOrderCommand dto) {
+        BigDecimal availableBalance = getAvailableBalance();
+        SymbolPrice currentPrice = getPrice(dto.getSymbol());
+        BigDecimal entryPrice = dto.getEntryPrice() != null ? dto.getEntryPrice() : currentPrice.getPrice();
+        int atrPeriod = dto.getAtrPeriod() == null ? 14 : dto.getAtrPeriod();
+
+        BigDecimal atr = atrPositionSizingService.calculateAtr(
+                getCandles(new CandleCommand(dto.getSymbol(), dto.getInterval(), dto.getLimit())),
+                atrPeriod
+        );
+
+        return atrPositionSizingService.preview(
+                dto.getSymbol(),
+                dto.getSide(),
+                dto.getInterval(),
+                atrPeriod,
+                availableBalance,
+                entryPrice,
+                atr,
+                dto.getRiskPercent(),
+                dto.getAtrMultiplier(),
+                dto.getLeverage()
+        );
+    }
+
+    @Override
+    public Order orderByAtr(AtrOrderCommand dto) {
+        AtrOrderPreview preview = previewAtrOrder(dto);
+        String price = dto.getEntryPrice() == null ? null : preview.getEntryPrice().toPlainString();
+        return placeOrder(
+                dto.getSymbol(),
+                dto.getSide(),
+                dto.getType(),
+                dto.getTimeInForce(),
+                preview.getQuantity().toPlainString(),
+                price,
+                false
+        );
+    }
+
+    @Override
     public void getOrders() {
 
     }
@@ -113,6 +156,15 @@ public class BinanceClient implements ClientService {
             return exchangeConnector.getPositions(Map.of("timestamp", String.valueOf(currentTimeMillis)));
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new RuntimeException("포지션 조회 실패", e);
+        }
+    }
+
+    private BigDecimal getAvailableBalance() {
+        long currentTimeMillis = System.currentTimeMillis();
+        try {
+            return exchangeConnector.getAvailableBalance(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new BalanceFetchFailException(e, "가용 자산 조회 실패");
         }
     }
 
