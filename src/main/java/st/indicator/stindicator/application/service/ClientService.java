@@ -28,4 +28,5 @@ public interface ClientService {
     SymbolPrice getPrice(String symbol);
     void getOrders();//주문 목록 조회
     List<PositionRisk> getPositions();//보유 포지션 목록 조회
+    Order liquidatePosition(String symbol);
 }

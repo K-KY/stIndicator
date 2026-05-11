@@ -159,6 +159,25 @@ public class BinanceClient implements ClientService {
         }
     }
 
+    @Override
+    public Order liquidatePosition(String symbol) {
+        PositionRisk positionRisk = getPositions().stream()
+                .filter(position -> position.getSymbol().equalsIgnoreCase(symbol))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("청산할 포지션이 없습니다: " + symbol));
+
+        String side = positionRisk.getPositionAmt().signum() > 0 ? "SELL" : "BUY";
+        return placeOrder(
+                positionRisk.getSymbol(),
+                side,
+                "MARKET",
+                null,
+                positionRisk.getPositionAmt().abs().toPlainString(),
+                null,
+                true
+        );
+    }
+
     private BigDecimal getAvailableBalance() {
         long currentTimeMillis = System.currentTimeMillis();
         try {

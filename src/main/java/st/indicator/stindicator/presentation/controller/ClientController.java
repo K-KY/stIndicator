@@ -79,6 +79,11 @@ public class ClientController {
         return order;
     }
 
+    @PostMapping("positions/liquidate")
+    public Order liquidatePosition(String symbol) {
+        return clientService.liquidatePosition(symbol);
+    }
+
     @PostMapping("order")
     public Order order(OrderRequestDto dto) {
         Order order = clientService.order(dto.toCommand());
