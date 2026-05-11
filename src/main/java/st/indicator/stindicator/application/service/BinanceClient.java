@@ -22,9 +22,11 @@ import java.util.Map;
 @Service
 public class BinanceClient implements ClientService {
     private final ExchangeConnector exchangeConnector;
+    private final AtrPositionSizingService atrPositionSizingService;
 
-    public BinanceClient(ExchangeConnector exchangeConnector) {
+    public BinanceClient(ExchangeConnector exchangeConnector, AtrPositionSizingService atrPositionSizingService) {
         this.exchangeConnector = exchangeConnector;
+        this.atrPositionSizingService = atrPositionSizingService;
     }
 
     @Override
@@ -54,7 +56,7 @@ public class BinanceClient implements ClientService {
 
     @Override
     public BigDecimal getAtr(CandleCommand dto) {
-        return null;
+        return atrPositionSizingService.calculateAtr(getCandles(dto), 14);
     }
 
     @Override
