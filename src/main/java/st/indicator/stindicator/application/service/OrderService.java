@@ -18,7 +18,7 @@ public class OrderService {
     public UserOrder save(String orderId, OrderCommand dto) {
         UserOrder userOrder = new UserOrder(orderId, dto.getSymbol(), dto.getSide(),
                         dto.getType(), dto.getTimeInForce(),
-                        dto.getPrice(), dto.getQuantity());
+                        dto.getQuantity(), dto.getPrice());
         orderRepository.saveOrder(userOrder);
         return userOrder;
     }

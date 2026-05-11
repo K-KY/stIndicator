@@ -8,6 +8,6 @@ import st.indicator.stindicator.infra.connector.entity.UserOrderEntity;
 import java.util.List;
 
 @Repository
-public interface OrderJpaRepository extends JpaRepository<UserOrderEntity, Long> {
+public interface OrderJpaRepository extends JpaRepository<UserOrderEntity, String> {
     List<UserOrder> findAllBySymbol(String symbol);
 }
