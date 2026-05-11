@@ -7,7 +7,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import st.indicator.stindicator.application.service.ClientService;
 import st.indicator.stindicator.application.service.OrderService;
+import st.indicator.stindicator.domain.entity.AssetBalance;
+import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
+import st.indicator.stindicator.domain.entity.PositionRisk;
+import st.indicator.stindicator.domain.entity.SymbolPrice;
 import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.presentation.dto.CandleRequestDto;
 import st.indicator.stindicator.presentation.dto.OrderRequestDto;
@@ -38,6 +42,26 @@ public class ClientController {
     @GetMapping("atrs")
     public BigDecimal getAtr(CandleRequestDto dto) {
         return clientService.getAtr(dto.toCommand());
+    }
+
+    @GetMapping("assets")
+    public List<AssetBalance> getAssets() {
+        return clientService.getAssets();
+    }
+
+    @GetMapping("symbols")
+    public List<ExchangeSymbol> getSymbols() {
+        return clientService.getExchangeSymbols();
+    }
+
+    @GetMapping("price")
+    public SymbolPrice getPrice(String symbol) {
+        return clientService.getPrice(symbol);
+    }
+
+    @GetMapping("positions")
+    public List<PositionRisk> getPositions() {
+        return clientService.getPositions();
     }
 
     @PostMapping("order")

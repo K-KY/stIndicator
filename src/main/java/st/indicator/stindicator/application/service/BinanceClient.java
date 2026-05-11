@@ -1,13 +1,16 @@
 package st.indicator.stindicator.application.service;
 
-import com.java.calculator.AtrCalculator;
-import com.java.candle.Candle;
 import org.springframework.stereotype.Service;
+import com.java.candle.Candle;
 import st.indicator.stindicator.application.dto.CandleCommand;
 import st.indicator.stindicator.application.dto.OrderCommand;
 import st.indicator.stindicator.application.exception.BalanceFetchFailException;
 import st.indicator.stindicator.application.exception.CandleFetchFailException;
+import st.indicator.stindicator.domain.entity.AssetBalance;
+import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
+import st.indicator.stindicator.domain.entity.PositionRisk;
+import st.indicator.stindicator.domain.entity.SymbolPrice;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -51,8 +54,6 @@ public class BinanceClient implements ClientService {
 
     @Override
     public BigDecimal getAtr(CandleCommand dto) {
-        AtrCalculator atrCalculator = new AtrCalculator();
-        atrCalculator.execute(getCandles(dto), 14);
         return null;
     }
 
@@ -72,6 +73,34 @@ public class BinanceClient implements ClientService {
     }
 
     @Override
+    public List<AssetBalance> getAssets() {
+        long currentTimeMillis = System.currentTimeMillis();
+        try {
+            return exchangeConnector.getAssets(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new BalanceFetchFailException(e, "자산 목록 조회 실패");
+        }
+    }
+
+    @Override
+    public List<ExchangeSymbol> getExchangeSymbols() {
+        try {
+            return exchangeConnector.getExchangeSymbols();
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new RuntimeException("거래소 심볼 목록 조회 실패", e);
+        }
+    }
+
+    @Override
+    public SymbolPrice getPrice(String symbol) {
+        try {
+            return exchangeConnector.getPrice(Map.of("symbol", symbol));
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new RuntimeException("현재가 조회 실패", e);
+        }
+    }
+
+    @Override
     public void getOrders() {
 
     }
@@ -83,7 +112,12 @@ public class BinanceClient implements ClientService {
 
 
     @Override
-    public void getPositions() {
-
+    public List<PositionRisk> getPositions() {
+        long currentTimeMillis = System.currentTimeMillis();
+        try {
+            return exchangeConnector.getPositions(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new RuntimeException("포지션 조회 실패", e);
+        }
     }
 }
