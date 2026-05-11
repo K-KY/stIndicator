@@ -16,7 +16,9 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Service
@@ -61,17 +63,8 @@ public class BinanceClient implements ClientService {
 
     @Override
     public Order order(OrderCommand dto) {
-        long timeMillis = System.currentTimeMillis();
-
-        return exchangeConnector.order(Map.of(
-                "symbol", dto.getSymbol(),
-                "side", dto.getSide(),
-                "type", dto.getType(),
-                "timeInForce", dto.getTimeInForce(),
-                "quantity", dto.getQuantity(),
-                "price", dto.getPrice(),
-                "timestamp", String.valueOf(timeMillis)
-                ));
+        return placeOrder(dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(),
+                dto.getQuantity(), dto.getPrice(), false);
     }
 
     @Override
@@ -121,5 +114,28 @@ public class BinanceClient implements ClientService {
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new RuntimeException("포지션 조회 실패", e);
         }
+    }
+
+    private Order placeOrder(String symbol, String side, String type, String timeInForce,
+                             String quantity, String price, boolean reduceOnly) {
+        long timeMillis = System.currentTimeMillis();
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("symbol", symbol);
+        params.put("side", side == null ? "BUY" : side.toUpperCase(Locale.ROOT));
+        params.put("type", type == null ? "MARKET" : type.toUpperCase(Locale.ROOT));
+        params.put("quantity", quantity);
+        params.put("timestamp", String.valueOf(timeMillis));
+
+        if (timeInForce != null && !timeInForce.isBlank()) {
+            params.put("timeInForce", timeInForce.toUpperCase(Locale.ROOT));
+        }
+        if (price != null && !price.isBlank()) {
+            params.put("price", price);
+        }
+        if (reduceOnly) {
+            params.put("reduceOnly", "true");
+        }
+
+        return exchangeConnector.order(params);
     }
 }
