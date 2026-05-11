@@ -1,7 +1,11 @@
 package st.indicator.stindicator.application.service;
 
 import com.java.candle.Candle;
+import st.indicator.stindicator.domain.entity.AssetBalance;
+import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
+import st.indicator.stindicator.domain.entity.PositionRisk;
+import st.indicator.stindicator.domain.entity.SymbolPrice;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -15,6 +19,16 @@ public interface ExchangeConnector {
             InvalidKeyException, InterruptedException;
 
     BigDecimal getBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
+            InvalidKeyException, InterruptedException;
+    BigDecimal getAvailableBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
+            InvalidKeyException, InterruptedException;
+    List<AssetBalance> getAssets(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
+            InvalidKeyException, InterruptedException;
+    List<PositionRisk> getPositions(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
+            InvalidKeyException, InterruptedException;
+    List<ExchangeSymbol> getExchangeSymbols() throws IOException, NoSuchAlgorithmException,
+            InvalidKeyException, InterruptedException;
+    SymbolPrice getPrice(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException;
     Order orderDetail(Map<String, String> params);
     Order order(Map<String, String> params);
