@@ -67,18 +67,19 @@ public class AtrPositionSizingService {
             throw new IllegalArgumentException("배율은 0보다 커야 합니다.");
         }
 
-        BigDecimal stopDistance = atr.multiply(normalizedAtrMultiplier);
+        BigDecimal stopDistance = atr.multiply(normalizedAtrMultiplier);//이 값만큼 더한값 혹은 뺀값을 청산 조건으로 사용
         BigDecimal riskAmount = availableBalance.multiply(normalizedRiskPercent)
-                .divide(BigDecimal.valueOf(100), SCALE, RoundingMode.HALF_UP);
-        BigDecimal quantity = riskAmount.divide(stopDistance, SCALE, RoundingMode.HALF_UP);
-        BigDecimal notional = quantity.multiply(entryPrice);
-        BigDecimal requiredMargin = notional.divide(normalizedLeverage, SCALE, RoundingMode.HALF_UP);
+                .divide(BigDecimal.valueOf(100), SCALE, RoundingMode.HALF_UP);//이 값만큼 현재 보유 자산 대비 리스크 지정
+        BigDecimal quantity = riskAmount.divide(stopDistance, SCALE, RoundingMode.HALF_UP);//진입 해야할 포지션 개수
+        BigDecimal notional = quantity.multiply(entryPrice);//레버리지 적용후 전체 보유량
+        BigDecimal requiredMargin = notional.divide(normalizedLeverage, SCALE, RoundingMode.HALF_UP);//최종적으로 필요한 증거금
 
+        //매도인지 매수인지 판단 후 매수인 경우 riskAmount%만큼 하락한 경우 청산 반대의 경우 같은 금액만큼 오른경우 청산
         boolean isLong = "BUY".equalsIgnoreCase(side);
-        BigDecimal stopPrice = isLong ? entryPrice.subtract(stopDistance) : entryPrice.add(stopDistance);
-        BigDecimal targetPrice = isLong ? entryPrice.add(stopDistance) : entryPrice.subtract(stopDistance);
+        BigDecimal stopPrice = isLong ? entryPrice.subtract(stopDistance) : entryPrice.add(stopDistance);//청산
+        BigDecimal targetPrice = isLong ? entryPrice.add(stopDistance) : entryPrice.subtract(stopDistance);//목표가
 
-        return new AtrOrderPreview(
+        AtrOrderPreview preview = new AtrOrderPreview(
                 symbol,
                 side == null ? "BUY" : side.toUpperCase(Locale.ROOT),
                 interval,
