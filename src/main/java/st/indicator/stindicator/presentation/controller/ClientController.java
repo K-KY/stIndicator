@@ -1,6 +1,8 @@
 package st.indicator.stindicator.presentation.controller;
 
 import com.java.candle.Candle;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -24,6 +26,7 @@ import java.util.List;
 @RestController
 @RequestMapping("client")
 public class ClientController {
+    private static final Logger log = LoggerFactory.getLogger(ClientController.class);
     private final ClientService clientService;
     private final OrderService orderService;
     public ClientController(ClientService clientService, OrderService orderService) {
@@ -33,46 +36,63 @@ public class ClientController {
 
     @GetMapping("candles")
     public List<Candle> getCandles(CandleRequestDto dto) {
+        log.info("request getCandles symbol={}, interval={}, limit={}",
+                dto.getSymbol(), dto.getInterval(), dto.getLimit());
         return clientService.getCandles(dto.toCommand());
     }
 
     @GetMapping("balances")
     public BigDecimal getBalance() {
+        log.info("request getBalance");
         return clientService.getBalance();
     }
 
     @GetMapping("atrs")
     public BigDecimal getAtr(CandleRequestDto dto) {
+        log.info("request getAtr symbol={}, interval={}, limit={}",
+                dto.getSymbol(), dto.getInterval(), dto.getLimit());
         return clientService.getAtr(dto.toCommand());
     }
 
-    @GetMapping("assets")
+    @GetMapping("assets")//
     public List<AssetBalance> getAssets() {
+        log.info("request getAssets");
         return clientService.getAssets();
     }
 
-    @GetMapping("symbols")
+    @GetMapping("symbols")//
     public List<ExchangeSymbol> getSymbols() {
+        log.info("request getSymbols");
         return clientService.getExchangeSymbols();
     }
 
-    @GetMapping("price")
+    @GetMapping("price")//
     public SymbolPrice getPrice(String symbol) {
+        log.info("request getPrice symbol={}", symbol);
         return clientService.getPrice(symbol);
     }
 
     @GetMapping("positions")
     public List<PositionRisk> getPositions() {
+        log.info("request getPositions");
         return clientService.getPositions();
     }
 
-    @GetMapping("atr/order/preview")
+    @GetMapping("atr/order/preview")//
     public AtrOrderPreview previewAtrOrder(AtrOrderRequestDto dto) {
+        log.info("request previewAtrOrder symbol={}, side={}, interval={}, limit={}, atrPeriod={}, riskPercent={}, atrMultiplier={}, leverage={}, type={}, timeInForce={}, entryPrice={}",
+                dto.getSymbol(), dto.getSide(), dto.getInterval(), dto.getLimit(), dto.getAtrPeriod(),
+                dto.getRiskPercent(), dto.getAtrMultiplier(), dto.getLeverage(), dto.getType(),
+                dto.getTimeInForce(), dto.getEntryPrice());
         return clientService.previewAtrOrder(dto.toCommand());
     }
 
     @PostMapping("atr/order")
     public Order orderByAtr(AtrOrderRequestDto dto) {
+        log.info("request orderByAtr symbol={}, side={}, interval={}, limit={}, atrPeriod={}, riskPercent={}, atrMultiplier={}, leverage={}, type={}, timeInForce={}, entryPrice={}",
+                dto.getSymbol(), dto.getSide(), dto.getInterval(), dto.getLimit(), dto.getAtrPeriod(),
+                dto.getRiskPercent(), dto.getAtrMultiplier(), dto.getLeverage(), dto.getType(),
+                dto.getTimeInForce(), dto.getEntryPrice());
         Order order = clientService.orderByAtr(dto.toCommand());
         orderService.save(order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
                 order.getTimeInForce(), order.getOrigQty().toPlainString(), order.getPrice().toPlainString());
@@ -81,11 +101,14 @@ public class ClientController {
 
     @PostMapping("positions/liquidate")
     public Order liquidatePosition(String symbol) {
+        log.info("request liquidatePosition symbol={}", symbol);
         return clientService.liquidatePosition(symbol);
     }
 
     @PostMapping("order")
     public Order order(OrderRequestDto dto) {
+        log.info("request order symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}",
+                dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(), dto.getQuantity(), dto.getPrice());
         Order order = clientService.order(dto.toCommand());
         orderService.save(order.getOrderId(), dto.toCommand());// 사용자 주문 저장
         return order;
@@ -93,11 +116,13 @@ public class ClientController {
 
     @GetMapping("order")
     public List<UserOrder> getOrders(String symbol /*특정 사용자,  미체결, 체결 필터 추가 되어야함,*/) {
+        log.info("request getOrders symbol={}", symbol);
         return orderService.getOrders(symbol);
     }
 
     @GetMapping("order/details")
     public Order getOrderDetail(String symbol, String orderId) {
+        log.info("request getOrderDetail symbol={}, orderId={}", symbol, orderId);
         return clientService.getOrderDetail(symbol, orderId);
     }
 }
