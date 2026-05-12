@@ -81,6 +81,51 @@ public class AtrOrderRequestDto {
         return entryPrice;
     }
 
+
+    public void setSymbol(String symbol) {
+        this.symbol = symbol;
+    }
+
+    public void setSide(String side) {
+        this.side = side;
+    }
+
+    public void setInterval(String interval) {
+        this.interval = interval;
+    }
+
+    public void setLimit(String limit) {
+        this.limit = limit;
+    }
+
+    public void setAtrPeriod(Integer atrPeriod) {
+        this.atrPeriod = atrPeriod;
+    }
+
+    public void setRiskPercent(BigDecimal riskPercent) {
+        this.riskPercent = riskPercent;
+    }
+
+    public void setAtrMultiplier(BigDecimal atrMultiplier) {
+        this.atrMultiplier = atrMultiplier;
+    }
+
+    public void setLeverage(BigDecimal leverage) {
+        this.leverage = leverage;
+    }
+
+    public void setType(String type) {
+        this.type = type;
+    }
+
+    public void setTimeInForce(String timeInForce) {
+        this.timeInForce = timeInForce;
+    }
+
+    public void setEntryPrice(BigDecimal entryPrice) {
+        this.entryPrice = entryPrice;
+    }
+
     public AtrOrderCommand toCommand() {
         return new AtrOrderCommand(
                 symbol,
