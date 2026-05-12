@@ -5,17 +5,17 @@ import st.indicator.stindicator.application.dto.AtrOrderCommand;
 import java.math.BigDecimal;
 
 public class AtrOrderRequestDto {
-    private String symbol;
-    private String side;
-    private String interval;
-    private String limit;
-    private Integer atrPeriod;
-    private BigDecimal riskPercent;
-    private BigDecimal atrMultiplier;
-    private BigDecimal leverage;
-    private String type;
-    private String timeInForce;
-    private BigDecimal entryPrice;
+    private String symbol;//이름
+    private String side;//매수 혹은 판매
+    private String interval;//캔들 간격
+    private String limit;//ATR계산 캔들 간격 150 -> 150개의 캔들로 ATR 계산
+    private Integer atrPeriod;//TR의 범위 14-> 캔들 중 14개의 평균을 냄
+    private BigDecimal riskPercent;//보유 자산 대비 최대 리스크
+    private BigDecimal atrMultiplier;//포지션 진입 ATR 배수
+    private BigDecimal leverage;//레버리지 비율
+    private String type;//LIMIT 만 사용
+    private String timeInForce;//뭔지 모름 GTC 사용중
+    private BigDecimal entryPrice;//진입 가격
 
     public AtrOrderRequestDto() {
     }
