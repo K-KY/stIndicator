@@ -1,6 +1,8 @@
 package st.indicator.stindicator.application.service;
 
 import com.java.candle.Candle;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
 
@@ -12,9 +14,11 @@ import java.util.Locale;
 
 @Service
 public class AtrPositionSizingService {
+    private static final Logger log = LoggerFactory.getLogger(AtrPositionSizingService.class);
     private static final int SCALE = 8;
 
     public BigDecimal calculateAtr(List<Candle> candles, int period) {
+        log.info("flow calculateAtr start candleCount={}, period={}", candles == null ? 0 : candles.size(), period);
         if (candles == null || candles.size() <= period) {
             throw new IllegalArgumentException("ATR 계산을 위한 캔들 수가 부족합니다.");
         }
@@ -37,12 +41,15 @@ public class AtrPositionSizingService {
                     .add(trueRanges.get(i))
                     .divide(BigDecimal.valueOf(period), SCALE, RoundingMode.HALF_UP);
         }
+        log.info("flow calculateAtr done period={}, atr={}", period, atr);
         return atr;
     }
 
     public AtrOrderPreview preview(String symbol, String side, String interval, Integer atrPeriod,
                                    BigDecimal availableBalance, BigDecimal entryPrice, BigDecimal atr,
                                    BigDecimal riskPercent, BigDecimal atrMultiplier, BigDecimal leverage) {
+        log.info("flow buildAtrPreview start symbol={}, side={}, interval={}, atrPeriod={}, availableBalance={}, entryPrice={}, atr={}, riskPercent={}, atrMultiplier={}, leverage={}",
+                symbol, side, interval, atrPeriod, availableBalance, entryPrice, atr, riskPercent, atrMultiplier, leverage);
         BigDecimal normalizedRiskPercent = defaultIfNull(riskPercent, BigDecimal.ONE);
         BigDecimal normalizedAtrMultiplier = defaultIfNull(atrMultiplier, BigDecimal.ONE);
         BigDecimal normalizedLeverage = defaultIfNull(leverage, BigDecimal.ONE);
@@ -92,6 +99,10 @@ public class AtrPositionSizingService {
                 riskAmount,
                 riskAmount
         );
+        log.info("flow buildAtrPreview done symbol={}, quantity={}, requiredMargin={}, stopPrice={}, targetPrice={}",
+                preview.getSymbol(), preview.getQuantity(), preview.getRequiredMargin(),
+                preview.getStopPrice(), preview.getTargetPrice());
+        return preview;
     }
 
     private BigDecimal average(List<BigDecimal> values) {
