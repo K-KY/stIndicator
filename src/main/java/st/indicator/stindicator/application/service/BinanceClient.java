@@ -1,6 +1,8 @@
 package st.indicator.stindicator.application.service;
 
 import com.java.candle.Candle;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.dto.AtrOrderCommand;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
@@ -25,6 +27,7 @@ import java.util.Map;
 
 @Service
 public class BinanceClient implements ClientService {
+    private static final Logger log = LoggerFactory.getLogger(BinanceClient.class);
     private final ExchangeConnector exchangeConnector;
     private final AtrPositionSizingService atrPositionSizingService;
 
@@ -36,23 +39,31 @@ public class BinanceClient implements ClientService {
     @Override
     public BigDecimal getBalance() {
         long currentTimeMillis = System.currentTimeMillis();
+        log.info("flow getBalance start timestamp={}", currentTimeMillis);
         try {
-            return exchangeConnector.getBalance(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            BigDecimal balance = exchangeConnector.getBalance(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            log.info("flow getBalance done balance={}", balance);
+            return balance;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new BalanceFetchFailException(e, "지갑 조회 실패");
         }
     }
 
+    //symbol의 차트에서 interval간격 봉으로 limit만큼 데이터 가져옴
     @Override
     public List<Candle> getCandles(CandleCommand dto) {
+        log.info("flow getCandles start symbol={}, interval={}, limit={}",
+                dto.getSymbol(), dto.getInterval(), dto.getLimit());
         try {
-            return exchangeConnector.getCandles(
+            List<Candle> candles = exchangeConnector.getCandles(
                     Map.of(
                             "symbol", dto.getSymbol(),
                             "interval", dto.getInterval(),
                             "limit", dto.getLimit()
                     )
             );
+            log.info("flow getCandles done symbol={}, count={}", dto.getSymbol(), candles.size());
+            return candles;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new CandleFetchFailException(e, "캔들 조회 실패");
         }
@@ -60,11 +71,16 @@ public class BinanceClient implements ClientService {
 
     @Override
     public BigDecimal getAtr(CandleCommand dto) {
-        return atrPositionSizingService.calculateAtr(getCandles(dto), 14);
+        BigDecimal atr = atrPositionSizingService.calculateAtr(getCandles(dto), 14);
+        log.info("flow getAtr done symbol={}, interval={}, limit={}, atr={}",
+                dto.getSymbol(), dto.getInterval(), dto.getLimit(), atr);
+        return atr;
     }
 
     @Override
     public Order order(OrderCommand dto) {
+        log.info("flow order start symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}",
+                dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(), dto.getQuantity(), dto.getPrice());
         return placeOrder(dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(),
                 dto.getQuantity(), dto.getPrice(), false);
     }
@@ -72,8 +88,11 @@ public class BinanceClient implements ClientService {
     @Override
     public List<AssetBalance> getAssets() {
         long currentTimeMillis = System.currentTimeMillis();
+        log.info("flow getAssets start timestamp={}", currentTimeMillis);
         try {
-            return exchangeConnector.getAssets(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            List<AssetBalance> assets = exchangeConnector.getAssets(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            log.info("flow getAssets done count={}, taken={}ms", assets.size(), System.currentTimeMillis() - currentTimeMillis);
+            return assets;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new BalanceFetchFailException(e, "자산 목록 조회 실패");
         }
@@ -81,8 +100,11 @@ public class BinanceClient implements ClientService {
 
     @Override
     public List<ExchangeSymbol> getExchangeSymbols() {
+        log.info("flow getExchangeSymbols start");
         try {
-            return exchangeConnector.getExchangeSymbols();
+            List<ExchangeSymbol> symbols = exchangeConnector.getExchangeSymbols();
+            log.info("flow getExchangeSymbols done count={}", symbols.size());
+            return symbols;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new RuntimeException("거래소 심볼 목록 조회 실패", e);
         }
@@ -90,8 +112,11 @@ public class BinanceClient implements ClientService {
 
     @Override
     public SymbolPrice getPrice(String symbol) {
+        log.info("flow getPrice start symbol={}", symbol);
         try {
-            return exchangeConnector.getPrice(Map.of("symbol", symbol));
+            SymbolPrice symbolPrice = exchangeConnector.getPrice(Map.of("symbol", symbol));
+            log.info("flow getPrice done symbol={}, price={}", symbolPrice.getSymbol(), symbolPrice.getPrice());
+            return symbolPrice;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new RuntimeException("현재가 조회 실패", e);
         }
@@ -99,6 +124,9 @@ public class BinanceClient implements ClientService {
 
     @Override
     public AtrOrderPreview previewAtrOrder(AtrOrderCommand dto) {
+        log.info("flow previewAtrOrder start symbol={}, side={}, interval={}, limit={}, atrPeriod={}, riskPercent={}, atrMultiplier={}, leverage={}, entryPrice={}",
+                dto.getSymbol(), dto.getSide(), dto.getInterval(), dto.getLimit(), dto.getAtrPeriod(),
+                dto.getRiskPercent(), dto.getAtrMultiplier(), dto.getLeverage(), dto.getEntryPrice());
         BigDecimal availableBalance = getAvailableBalance();
         SymbolPrice currentPrice = getPrice(dto.getSymbol());
         BigDecimal entryPrice = dto.getEntryPrice() != null ? dto.getEntryPrice() : currentPrice.getPrice();
@@ -109,7 +137,7 @@ public class BinanceClient implements ClientService {
                 atrPeriod
         );
 
-        return atrPositionSizingService.preview(
+        AtrOrderPreview preview = atrPositionSizingService.preview(
                 dto.getSymbol(),
                 dto.getSide(),
                 dto.getInterval(),
@@ -121,13 +149,19 @@ public class BinanceClient implements ClientService {
                 dto.getAtrMultiplier(),
                 dto.getLeverage()
         );
+        log.info("flow previewAtrOrder done symbol={}, atr={}, quantity={}, requiredMargin={}, stopPrice={}, targetPrice={}",
+                preview.getSymbol(), preview.getAtr(), preview.getQuantity(), preview.getRequiredMargin(),
+                preview.getStopPrice(), preview.getTargetPrice());
+        return preview;
     }
 
     @Override
     public Order orderByAtr(AtrOrderCommand dto) {
+        log.info("flow orderByAtr start symbol={}, side={}, type={}, leverage={}",
+                dto.getSymbol(), dto.getSide(), dto.getType(), dto.getLeverage());
         AtrOrderPreview preview = previewAtrOrder(dto);
         String price = dto.getEntryPrice() == null ? null : preview.getEntryPrice().toPlainString();
-        return placeOrder(
+        Order order = placeOrder(
                 dto.getSymbol(),
                 dto.getSide(),
                 dto.getType(),
@@ -136,6 +170,9 @@ public class BinanceClient implements ClientService {
                 price,
                 false
         );
+        log.info("flow orderByAtr done symbol={}, orderId={}, quantity={}",
+                order.getSymbol(), order.getOrderId(), preview.getQuantity());
+        return order;
     }
 
     @Override
@@ -145,6 +182,7 @@ public class BinanceClient implements ClientService {
 
     @Override
     public Order getOrderDetail(String symbol, String orderId) {
+        log.info("flow getOrderDetail start symbol={}, orderId={}", symbol, orderId);
         return exchangeConnector.orderDetail(Map.of("symbol", symbol, "orderId", orderId));
     }
 
@@ -152,8 +190,11 @@ public class BinanceClient implements ClientService {
     @Override
     public List<PositionRisk> getPositions() {
         long currentTimeMillis = System.currentTimeMillis();
+        log.info("flow getPositions start timestamp={}", currentTimeMillis);
         try {
-            return exchangeConnector.getPositions(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            List<PositionRisk> positions = exchangeConnector.getPositions(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            log.info("flow getPositions done count={}, taken={}", positions.size(), System.currentTimeMillis() - currentTimeMillis);
+            return positions;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new RuntimeException("포지션 조회 실패", e);
         }
@@ -161,13 +202,14 @@ public class BinanceClient implements ClientService {
 
     @Override
     public Order liquidatePosition(String symbol) {
+        log.info("flow liquidatePosition start symbol={}", symbol);
         PositionRisk positionRisk = getPositions().stream()
                 .filter(position -> position.getSymbol().equalsIgnoreCase(symbol))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("청산할 포지션이 없습니다: " + symbol));
 
         String side = positionRisk.getPositionAmt().signum() > 0 ? "SELL" : "BUY";
-        return placeOrder(
+        Order order = placeOrder(
                 positionRisk.getSymbol(),
                 side,
                 "MARKET",
@@ -176,12 +218,18 @@ public class BinanceClient implements ClientService {
                 null,
                 true
         );
+        log.info("flow liquidatePosition done symbol={}, orderId={}, closeSide={}, quantity={}",
+                order.getSymbol(), order.getOrderId(), side, positionRisk.getPositionAmt().abs());
+        return order;
     }
 
     private BigDecimal getAvailableBalance() {
         long currentTimeMillis = System.currentTimeMillis();
+        log.info("flow getAvailableBalance start timestamp={}", currentTimeMillis);
         try {
-            return exchangeConnector.getAvailableBalance(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            BigDecimal availableBalance = exchangeConnector.getAvailableBalance(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            log.info("flow getAvailableBalance done availableBalance={}, taken={}", availableBalance, System.currentTimeMillis() - currentTimeMillis);
+            return availableBalance;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
             throw new BalanceFetchFailException(e, "가용 자산 조회 실패");
         }
@@ -190,6 +238,8 @@ public class BinanceClient implements ClientService {
     private Order placeOrder(String symbol, String side, String type, String timeInForce,
                              String quantity, String price, boolean reduceOnly) {
         long timeMillis = System.currentTimeMillis();
+        log.info("flow placeOrder start symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}, reduceOnly={}",
+                symbol, side, type, timeInForce, quantity, price, reduceOnly);
         Map<String, String> params = new LinkedHashMap<>();
         params.put("symbol", symbol);
         params.put("side", side == null ? "BUY" : side.toUpperCase(Locale.ROOT));
@@ -207,6 +257,9 @@ public class BinanceClient implements ClientService {
             params.put("reduceOnly", "true");
         }
 
-        return exchangeConnector.order(params);
+        Order order = exchangeConnector.order(params);
+        log.info("flow placeOrder done symbol={}, orderId={}, status={}, executedQty={}",
+                order.getSymbol(), order.getOrderId(), order.getStatus(), order.getExecutedQty());
+        return order;
     }
 }

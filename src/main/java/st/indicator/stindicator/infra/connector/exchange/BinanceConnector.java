@@ -69,6 +69,8 @@ public class BinanceConnector implements ExchangeConnector {
             BigDecimal walletBalance = decimal(assetNode, "walletBalance");
             BigDecimal availableBalance = decimal(assetNode, "availableBalance");
             BigDecimal unrealizedProfit = decimal(assetNode, "unrealizedProfit");
+            // 불필요한 자산 정보를 필터링
+            // 현재 사용중이지 않은 옵션에 대한 정보
             if (walletBalance.signum() == 0 && availableBalance.signum() == 0 && unrealizedProfit.signum() == 0) {
                 continue;
             }
