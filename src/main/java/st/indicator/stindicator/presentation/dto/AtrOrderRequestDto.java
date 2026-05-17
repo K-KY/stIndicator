@@ -5,17 +5,28 @@ import st.indicator.stindicator.application.dto.AtrOrderCommand;
 import java.math.BigDecimal;
 
 public class AtrOrderRequestDto {
-    private String symbol;//이름
-    private String side;//매수 혹은 판매
-    private String interval;//캔들 간격
-    private String limit;//ATR계산 캔들 간격 150 -> 150개의 캔들로 ATR 계산
-    private Integer atrPeriod;//TR의 범위 14-> 캔들 중 14개의 평균을 냄
-    private BigDecimal riskPercent;//보유 자산 대비 최대 리스크
-    private BigDecimal atrMultiplier;//포지션 진입 ATR 배수
-    private BigDecimal leverage;//레버리지 비율
-    private String type;//LIMIT 만 사용
-    private String timeInForce;//뭔지 모름 GTC 사용중
-    private BigDecimal entryPrice;//진입 가격
+    // ATR 기준 주문을 계산하고 실행할 대상 심볼
+    private String symbol;
+    // 주문 방향. BUY는 롱 기준 계산, SELL은 숏 기준 계산
+    private String side;
+    // ATR 계산에 사용할 캔들 주기. 예: 1m, 15m, 1h, 4h
+    private String interval;
+    // ATR 계산용으로 조회할 캔들 개수. period보다 충분히 큰 값을 주는 용도
+    private String limit;
+    // ATR 기간. True Range 평균을 계산할 캔들 수
+    private Integer atrPeriod;
+    // 가용 자산 대비 이번 주문에 허용할 리스크 비율. 1이면 가용 자산의 1%
+    private BigDecimal riskPercent;
+    // 손절 거리 계산에 사용할 ATR 배수. stopDistance = ATR x atrMultiplier
+    private BigDecimal atrMultiplier;
+    // 계산된 주문 금액 대비 필요한 증거금을 산출할 때 사용할 레버리지
+    private BigDecimal leverage;
+    // 실제 거래소에 보낼 주문 타입. MARKET 또는 LIMIT
+    private String type;
+    // LIMIT 주문일 때 사용할 주문 유지 정책. 예: GTC
+    private String timeInForce;
+    // 사용자가 직접 지정한 진입 가격. 비우면 현재가를 기준으로 계산
+    private BigDecimal entryPrice;
 
     public AtrOrderRequestDto() {
     }
