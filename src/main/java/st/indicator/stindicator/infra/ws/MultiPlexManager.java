@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class MultiPlexManager {
 
-    private static final String WS_URL = "wss://fstream.binance.com/ws";
+    private static final String WS_URL = "wss://stream.binance.com/ws";
     private final MonitorService monitorService;
 
     private final ObjectMapper objectMapper;
@@ -72,6 +72,7 @@ public class MultiPlexManager {
     //구독
     public void subscribe(String stream) {
         if (subscriptions.add(stream)) {
+            System.out.println("stream = " + stream);
             sendMessage(buildSubscribeMessage(stream));
         }
     }

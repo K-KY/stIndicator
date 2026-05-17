@@ -24,6 +24,7 @@ public class MonitorService {
     }
 
     public void subscribe(WebSocketSession session, SymbolMonitorDto req) {
+        logger.info("start subscribe: {}", req.getSymbols());
         List<String> symbols = req.getSymbols();
         for (String symbol : symbols) {
             Set<WebSocketSession> sessions = subscribers.getOrDefault(symbol, new HashSet<>());
@@ -32,6 +33,7 @@ public class MonitorService {
 
             //다음 데이터가 오기전 최신 데이터 푸시
             KlineEventDTO latest = monitorRepository.poll(symbol);
+            System.out.println("latest = " + latest);
             if (latest != null) {
                 try {
                     logger.info("Subscribe Symbol, Push Latest {} Data", symbol);

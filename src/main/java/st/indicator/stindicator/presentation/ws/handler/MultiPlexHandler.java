@@ -43,6 +43,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         SymbolMonitorDto req = objectMapper.readValue(message.getPayload(), SymbolMonitorDto.class);
         log.info("received request: {}", req.getSymbols());
         if (Objects.equals(req.getType(), SUBSCRIBE)) {
+            log.info("subscribe request: {}", req.getSymbols());
             monitorService.subscribe(session, req);
         }
         if (Objects.equals(req.getType(), UNSUBSCRIBE)) {
