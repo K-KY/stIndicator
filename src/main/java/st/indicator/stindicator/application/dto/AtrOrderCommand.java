@@ -3,16 +3,27 @@ package st.indicator.stindicator.application.dto;
 import java.math.BigDecimal;
 
 public class AtrOrderCommand {
+    // ATR 기반 계산과 실제 주문 실행에 사용할 대상 심볼
     private final String symbol;
+    // BUY면 롱 기준, SELL이면 숏 기준으로 손절/목표가를 계산한다
     private final String side;
+    // ATR 계산에 사용할 캔들 주기
     private final String interval;
+    // ATR 계산에 사용할 캔들 조회 개수
     private final String limit;
+    // ATR 계산 기간
     private final Integer atrPeriod;
+    // 가용 자산 대비 허용할 리스크 비율
     private final BigDecimal riskPercent;
+    // ATR 값에 곱해 손절 거리로 변환하는 배수
     private final BigDecimal atrMultiplier;
+    // 필요 증거금 계산에 사용할 레버리지
     private final BigDecimal leverage;
+    // 실제 거래소에 보낼 주문 타입
     private final String type;
+    // LIMIT 주문일 때만 의미 있는 시간 정책
     private final String timeInForce;
+    // 직접 지정한 진입 가격. 없으면 현재가 기준 계산
     private final BigDecimal entryPrice;
 
     public AtrOrderCommand(String symbol, String side, String interval, String limit,
