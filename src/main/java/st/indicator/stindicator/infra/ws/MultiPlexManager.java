@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.netty.http.client.HttpClient;
@@ -29,9 +31,9 @@ import java.util.concurrent.atomic.AtomicReference;
 @Component
 public class MultiPlexManager {
     private static final Logger log = LoggerFactory.getLogger(MultiPlexManager.class);
-    private static final Duration HEARTBEAT_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(15);
 
-    private static final String WS_URL = "wss://fstream.binance.com/ws";
+    private static final String WS_URL = "wss://fstream.binance.com/market/stream";
     private final MonitorService monitorService;
     private final MonitorEventPublisher monitorEventPublisher;
 
@@ -56,7 +58,7 @@ public class MultiPlexManager {
     @PostConstruct
     public void init() {
         connect();
-        watchdogExecutor.scheduleAtFixedRate(this::checkHeartbeat, 10, 10, TimeUnit.SECONDS);
+        watchdogExecutor.scheduleAtFixedRate(this::sendPing, 15, 15, TimeUnit.SECONDS);
     }
 
     @PreDestroy
@@ -141,13 +143,16 @@ public class MultiPlexManager {
         }
     }
 
-    private void checkHeartbeat() {
-        if (subscriptions.isEmpty()) {
+    private void sendPing() {
+        if (outbound == null || subscriptions.isEmpty()) {
             return;
         }
-        Instant last = lastMessageAt.get();
-        if (Duration.between(last, Instant.now()).compareTo(HEARTBEAT_TIMEOUT) > 0) {
-            log.warn("binance multiplex heartbeat timeout, reconnect");
+        try {
+            outbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
+                    .then()
+                    .subscribe();
+        } catch (Exception e) {
+            log.warn("binance multiplex ping failed, reconnect", e);
             reconnect();
         }
     }
@@ -199,9 +204,19 @@ public class MultiPlexManager {
      }
      */
     private void handleMessage(String msg) {
+        if (msg == null) {
+            return;
+        }
+
+        String trimmed = msg.trim();
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+            log.debug("ignore non-json websocket frame");
+            return;
+        }
+
         try {
             lastMessageAt.set(Instant.now());
-            JsonNode node = objectMapper.readTree(msg);
+            JsonNode node = objectMapper.readTree(trimmed);
 
             //구독 응답 메시지 무시
             if (node.has("result")) {
@@ -210,18 +225,18 @@ public class MultiPlexManager {
 
             //새로운 캔들 데이터가 들어왔을 때 처리
             if (node.has("e") && "kline".equals(node.get("e").asString())) {
-                KlineEventDTO dto = objectMapper.readValue(msg, KlineEventDTO.class);
+                KlineEventDTO dto = objectMapper.readValue(trimmed, KlineEventDTO.class);
                 monitorService.push(dto);
                 return;
             }
 
             //실시간 가격 업데이트 처리
             if (node.has("e") && "markPriceUpdate".equals(node.get("e").asString())) {
-                BinanceMarkPriceMessage dto = objectMapper.readValue(msg, BinanceMarkPriceMessage.class);
+                BinanceMarkPriceMessage dto = objectMapper.readValue(trimmed, BinanceMarkPriceMessage.class);
                 monitorEventPublisher.publishPriceTick(dto.getSymbol(), dto.getMarkPrice(), dto.getEventTime());
             }
         } catch (Exception e) {
-            log.warn("multiplex message parse failed payload={}", msg, e);
+            log.warn("multiplex message parse failed payload={}", trimmed, e);
         }
     }
 }
