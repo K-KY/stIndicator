@@ -1,19 +1,21 @@
 package st.indicator.stindicator.presentation.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import st.indicator.stindicator.application.dto.OrderCommand;
 
+@Schema(description = "일반 주문 요청 DTO")
 public class OrderRequestDto {
-    // 주문을 넣을 거래 심볼. Binance Futures 심볼 형식 예: BTCUSDT
+    @Schema(description = "주문을 넣을 거래 심볼", example = "BTCUSDT")
     String symbol;
-    // 주문 방향. BUY면 매수/롱 진입, SELL이면 매도/숏 진입 또는 청산
+    @Schema(description = "주문 방향", example = "BUY")
     String side;
-    // 주문 유형. MARKET은 시장가, LIMIT은 지정가 주문에 사용
+    @Schema(description = "주문 유형", example = "LIMIT")
     String type;
-    // LIMIT 주문의 유효 시간 정책. 예: GTC, IOC, FOK
+    @Schema(description = "LIMIT 주문의 유효 시간 정책", example = "GTC")
     String timeInForce;
-    // 실제로 거래소에 전송할 주문 수량
+    @Schema(description = "실제로 거래소에 전송할 주문 수량", example = "0.01")
     String quantity;
-    // LIMIT 주문에서 사용할 지정 가격. MARKET 주문에서는 보통 비워둔다
+    @Schema(description = "LIMIT 주문에서 사용할 지정 가격", example = "60000")
     String price;
 
     public OrderRequestDto(String symbol, String side, String type, String timeInForce, String quantity, String price) {
