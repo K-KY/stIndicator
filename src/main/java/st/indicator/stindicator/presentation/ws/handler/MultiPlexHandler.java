@@ -8,6 +8,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import st.indicator.stindicator.application.service.MonitorService;
+import st.indicator.stindicator.infra.ws.MultiPlexManager;
 import st.indicator.stindicator.infra.ws.dto.binance.KlineEventDTO;
 import st.indicator.stindicator.presentation.dto.SymbolMonitorDto;
 import tools.jackson.databind.ObjectMapper;
@@ -23,11 +24,12 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     private static final String UNSUBSCRIBE = "UNSUBSCRIBE";
     private final ObjectMapper objectMapper;
     private final MonitorService monitorService;
+    private final MultiPlexManager multiPlexManager;
 
-    public MultiPlexHandler(ObjectMapper objectMapper, MonitorService monitorService) {
-
+    public MultiPlexHandler(ObjectMapper objectMapper, MonitorService monitorService, MultiPlexManager multiPlexManager) {
         this.objectMapper = objectMapper;
         this.monitorService = monitorService;
+        this.multiPlexManager = multiPlexManager;
     }
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
@@ -45,9 +47,11 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         if (Objects.equals(req.getType(), SUBSCRIBE)) {
             log.info("subscribe request: {}", req.getSymbols());
             monitorService.subscribe(session, req);
+            req.getSymbols().forEach(symbol -> multiPlexManager.subscribeKline(symbol, req.getInterval()));
         }
         if (Objects.equals(req.getType(), UNSUBSCRIBE)) {
-            monitorService.unsubscribe(session, req);
+            monitorService.unsubscribe(session, req)
+                    .forEach(multiPlexManager::unsubscribe);
         }
     }
 
@@ -55,7 +59,8 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         log.info("disconnect session: {}", session.getId());
         sessions.remove(session); // 세션 제거
-        monitorService.unsubscribe(session);//
+        monitorService.unsubscribe(session)
+                .forEach(multiPlexManager::unsubscribe);
     }
 
     // 서버 → 클라이언트
