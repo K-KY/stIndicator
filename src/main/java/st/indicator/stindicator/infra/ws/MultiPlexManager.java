@@ -131,6 +131,14 @@ public class MultiPlexManager {
         unsubscribe(symbol.toLowerCase() + "@markPrice@1s");
     }
 
+    public void subscribeTicker(String symbol) {
+        subscribe(symbol.toLowerCase() + "@ticker");
+    }
+
+    public void unsubscribeTicker(String symbol) {
+        unsubscribe(symbol.toLowerCase() + "@ticker");
+    }
+
     private void resendSubscriptions() {
         subscriptions.forEach(stream ->
                 sendMessage(buildSubscribeMessage(stream))
@@ -217,6 +225,8 @@ public class MultiPlexManager {
         try {
             lastMessageAt.set(Instant.now());
             JsonNode node = objectMapper.readTree(trimmed);
+            JsonNode payload = node.has("data") ? node.get("data") : node;
+            String payloadJson = objectMapper.writeValueAsString(payload);
 
             //구독 응답 메시지 무시
             if (node.has("result")) {
@@ -224,15 +234,20 @@ public class MultiPlexManager {
             }
 
             //새로운 캔들 데이터가 들어왔을 때 처리
-            if (node.has("e") && "kline".equals(node.get("e").asString())) {
-                KlineEventDTO dto = objectMapper.readValue(trimmed, KlineEventDTO.class);
+            if (payload.has("e") && "kline".equals(payload.get("e").asString())) {
+                KlineEventDTO dto = objectMapper.readValue(payloadJson, KlineEventDTO.class);
                 monitorService.push(dto);
                 return;
             }
 
+            if (payload.has("e") && "24hrTicker".equals(payload.get("e").asString())) {
+                monitorService.pushTicker(payload.get("s").asString(), payloadJson);
+                return;
+            }
+
             //실시간 가격 업데이트 처리
-            if (node.has("e") && "markPriceUpdate".equals(node.get("e").asString())) {
-                BinanceMarkPriceMessage dto = objectMapper.readValue(trimmed, BinanceMarkPriceMessage.class);
+            if (payload.has("e") && "markPriceUpdate".equals(payload.get("e").asString())) {
+                BinanceMarkPriceMessage dto = objectMapper.readValue(payloadJson, BinanceMarkPriceMessage.class);
                 monitorEventPublisher.publishPriceTick(dto.getSymbol(), dto.getMarkPrice(), dto.getEventTime());
             }
         } catch (Exception e) {

@@ -34,8 +34,14 @@ public class MonitorService {
         List<String> symbols = req.getSymbols();
         for (String symbol : symbols) {
             String streamKey = toKlineStreamKey(symbol, req.getInterval());
+            String dailyStreamKey = toKlineStreamKey(symbol, "1d");
+            String tickerStreamKey = toTickerStreamKey(symbol);
             streamSubscribers.computeIfAbsent(streamKey, ignored -> ConcurrentHashMap.newKeySet()).add(session);
+            streamSubscribers.computeIfAbsent(dailyStreamKey, ignored -> ConcurrentHashMap.newKeySet()).add(session);
+            streamSubscribers.computeIfAbsent(tickerStreamKey, ignored -> ConcurrentHashMap.newKeySet()).add(session);
             sessionSubscriptions.computeIfAbsent(session.getId(), ignored -> ConcurrentHashMap.newKeySet()).add(streamKey);
+            sessionSubscriptions.computeIfAbsent(session.getId(), ignored -> ConcurrentHashMap.newKeySet()).add(dailyStreamKey);
+            sessionSubscriptions.computeIfAbsent(session.getId(), ignored -> ConcurrentHashMap.newKeySet()).add(tickerStreamKey);
 
             KlineEventDTO latest = monitorRepository.poll(streamKey);
             if (latest != null) {
@@ -71,25 +77,49 @@ public class MonitorService {
         }
     }
 
+    public void pushTicker(String symbol, String payload) {
+        String streamKey = toTickerStreamKey(symbol);
+        Set<WebSocketSession> sessions = streamSubscribers.get(streamKey);
+
+        if (sessions != null) {
+            sessions.removeIf(session -> {
+                try {
+                    if (session.isOpen()) {
+                        session.sendMessage(new TextMessage(payload));
+                        return false;
+                    }
+                    logger.info("Send Massage Failed Disconnect Session : {}", session.getId());
+                    return true;
+                } catch (Exception e) {
+                    logger.warn("ticker event send failed session={}, stream={}", session.getId(), streamKey, e);
+                    return true;
+                }
+            });
+        }
+    }
+
     public Set<String> unsubscribe(WebSocketSession session, SymbolMonitorDto req) {
         logger.info("Subscribe Symbol, DisConnect Session: {}, request Symbol: {}", session.getId(), req.getSymbols());
         Set<String> releasedStreams = new HashSet<>();
         Set<String> sessionStreams = sessionSubscriptions.get(session.getId());
 
         req.getSymbols().forEach(symbol -> {
-            String streamKey = toKlineStreamKey(symbol, req.getInterval());
-            Set<WebSocketSession> sessions = streamSubscribers.get(streamKey);
-            if (sessions == null) {
-                return;
-            }
-            sessions.remove(session);
-            if (sessionStreams != null) {
-                sessionStreams.remove(streamKey);
-            }
-            if (sessions.isEmpty()) {
-                streamSubscribers.remove(streamKey);
-                releasedStreams.add(streamKey);
-            }
+            Set<String> streamKeys = Set.of(toKlineStreamKey(symbol, req.getInterval()), toKlineStreamKey(symbol, "1d"), toTickerStreamKey(symbol));
+
+            streamKeys.forEach(streamKey -> {
+                Set<WebSocketSession> sessions = streamSubscribers.get(streamKey);
+                if (sessions == null) {
+                    return;
+                }
+                sessions.remove(session);
+                if (sessionStreams != null) {
+                    sessionStreams.remove(streamKey);
+                }
+                if (sessions.isEmpty()) {
+                    streamSubscribers.remove(streamKey);
+                    releasedStreams.add(streamKey);
+                }
+            });
         });
 
         if (sessionStreams != null && sessionStreams.isEmpty()) {
@@ -168,5 +198,9 @@ public class MonitorService {
     private String toKlineStreamKey(String symbol, String interval) {
         String normalizedInterval = interval == null || interval.isBlank() ? "1m" : interval.toLowerCase();
         return symbol.toLowerCase() + "@kline_" + normalizedInterval;
+    }
+
+    private String toTickerStreamKey(String symbol) {
+        return symbol.toLowerCase() + "@ticker";
     }
 }

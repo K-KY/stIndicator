@@ -47,7 +47,11 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         if (Objects.equals(req.getType(), SUBSCRIBE)) {
             log.info("subscribe request: {}", req.getSymbols());
             monitorService.subscribe(session, req);
-            req.getSymbols().forEach(symbol -> multiPlexManager.subscribeKline(symbol, req.getInterval()));
+            req.getSymbols().forEach(symbol -> {
+                multiPlexManager.subscribeKline(symbol, req.getInterval());
+                multiPlexManager.subscribeKline(symbol, "1d");
+                multiPlexManager.subscribeTicker(symbol);
+            });
         }
         if (Objects.equals(req.getType(), UNSUBSCRIBE)) {
             monitorService.unsubscribe(session, req)
