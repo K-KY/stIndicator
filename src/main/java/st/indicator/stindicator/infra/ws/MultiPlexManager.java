@@ -139,6 +139,14 @@ public class MultiPlexManager {
         unsubscribe(symbol.toLowerCase() + "@ticker");
     }
 
+    public int activeConnectionCount() {
+        return outbound == null || connection == null || connection.isDisposed() ? 0 : 1;
+    }
+
+    public int subscriptionCount() {
+        return subscriptions.size();
+    }
+
     private void resendSubscriptions() {
         subscriptions.forEach(stream ->
                 sendMessage(buildSubscribeMessage(stream))

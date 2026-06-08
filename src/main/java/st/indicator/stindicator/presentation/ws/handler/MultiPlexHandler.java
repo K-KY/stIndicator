@@ -1,5 +1,6 @@
 package st.indicator.stindicator.presentation.ws.handler;
 
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -18,6 +19,9 @@ import tools.jackson.databind.ObjectMapper;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class MultiPlexHandler extends TextWebSocketHandler {
@@ -28,6 +32,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     private final MonitorService monitorService;
     private final MultiPlexManager multiPlexManager;
     private final MarketSubscriptionService marketSubscriptionService;
+    private final ScheduledExecutorService releaseExecutor = Executors.newSingleThreadScheduledExecutor();
 
     public MultiPlexHandler(ObjectMapper objectMapper, MonitorService monitorService, MultiPlexManager multiPlexManager,
                             MarketSubscriptionService marketSubscriptionService) {
@@ -38,6 +43,11 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     }
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
+
+    @PreDestroy
+    public void shutdown() {
+        releaseExecutor.shutdownNow();
+    }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
@@ -63,7 +73,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         if (Objects.equals(req.getType(), UNSUBSCRIBE)) {
             marketSubscriptionService.unsubscribe(sessionUserId(session), req.getSymbols());
             monitorService.unsubscribe(session, req)
-                    .forEach(multiPlexManager::unsubscribe);
+                    .forEach(this::releaseUpstreamWhenUnused);
         }
     }
 
@@ -72,7 +82,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         log.info("disconnect session: {}", session.getId());
         sessions.remove(session); // 세션 제거
         monitorService.unsubscribe(session)
-                .forEach(multiPlexManager::unsubscribe);
+                .forEach(this::releaseUpstreamWhenUnused);
     }
 
     // 서버 → 클라이언트
@@ -86,9 +96,24 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         });
     }
 
+    public int activeSessionCount() {
+        sessions.removeIf(session -> !session.isOpen());
+        return sessions.size();
+    }
+
     private Long sessionUserId(WebSocketSession session) {
         Object userId = session.getAttributes().get(SessionUser.USER_ID);
         return userId instanceof Long id ? id : null;
+    }
+
+    private void releaseUpstreamWhenUnused(String stream) {
+        releaseExecutor.schedule(() -> {
+            if (monitorService.hasStreamSubscribers(stream)) {
+                log.info("skip upstream unsubscribe stream={}, active subscriber exists", stream);
+                return;
+            }
+            multiPlexManager.unsubscribe(stream);
+        }, 1, TimeUnit.SECONDS);
     }
 
     private void restoreStoredSubscriptions(WebSocketSession session) {
