@@ -58,12 +58,12 @@ public class BinanceClient implements ClientService {
         log.info("flow getCandles start symbol={}, interval={}, limit={}",
                 dto.getSymbol(), dto.getInterval(), dto.getLimit());
         try {
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("symbol", valueOrDefault(dto.getSymbol(), "BTCUSDT").toUpperCase(Locale.ROOT));
+            params.put("interval", valueOrDefault(dto.getInterval(), "1h"));
+            params.put("limit", valueOrDefault(dto.getLimit(), "150"));
             List<Candle> candles = exchangeConnector.getCandles(
-                    Map.of(
-                            "symbol", dto.getSymbol(),
-                            "interval", dto.getInterval(),
-                            "limit", dto.getLimit()
-                    )
+                    params
             );
             log.info("flow getCandles done symbol={}, count={}", dto.getSymbol(), candles.size());
             return candles;
