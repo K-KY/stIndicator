@@ -33,7 +33,8 @@ public class MultiPlexManager {
     private static final Logger log = LoggerFactory.getLogger(MultiPlexManager.class);
     private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(15);
 
-    private static final String WS_URL = "wss://fstream.binance.com/market/stream";
+    private static final String MARKET_WS_URL = "wss://fstream.binance.com/market/stream";
+    private static final String PUBLIC_WS_URL = "wss://fstream.binance.com/public/stream";
     private final MonitorService monitorService;
     private final MonitorEventPublisher monitorEventPublisher;
 
@@ -41,11 +42,14 @@ public class MultiPlexManager {
 
     // 현재 구독 중인 stream 목록
     private final Set<String> subscriptions = ConcurrentHashMap.newKeySet();
+    private final Set<String> publicSubscriptions = ConcurrentHashMap.newKeySet();
     private final AtomicReference<Instant> lastMessageAt = new AtomicReference<>(Instant.now());
     private final ScheduledExecutorService watchdogExecutor = Executors.newSingleThreadScheduledExecutor();
 
     private volatile WebsocketOutbound outbound;
+    private volatile WebsocketOutbound publicOutbound;
     private volatile Disposable connection;
+    private volatile Disposable publicConnection;
 
     public MultiPlexManager(MonitorService monitorService,
                             MonitorEventPublisher monitorEventPublisher,
@@ -66,6 +70,9 @@ public class MultiPlexManager {
         if (connection != null && !connection.isDisposed()) {
             connection.dispose();
         }
+        if (publicConnection != null && !publicConnection.isDisposed()) {
+            publicConnection.dispose();
+        }
         watchdogExecutor.shutdownNow();
     }
 
@@ -73,7 +80,7 @@ public class MultiPlexManager {
         lastMessageAt.set(Instant.now());
         this.connection = HttpClient.create()
                 .websocket()
-                .uri(WS_URL)
+                .uri(MARKET_WS_URL)
                 .handle((in, out) -> {
                     this.outbound = out;
                     resendSubscriptions();
@@ -87,6 +94,27 @@ public class MultiPlexManager {
                 .retryWhen(reactor.util.retry.Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1))
                         .maxBackoff(Duration.ofSeconds(30))
                         .doBeforeRetry(signal -> log.warn("binance multiplex reconnect attempt={}", signal.totalRetriesInARow() + 1)))
+                .subscribe();
+    }
+
+    private void connectPublic() {
+        lastMessageAt.set(Instant.now());
+        this.publicConnection = HttpClient.create()
+                .websocket()
+                .uri(PUBLIC_WS_URL)
+                .handle((in, out) -> {
+                    this.publicOutbound = out;
+                    resendPublicSubscriptions();
+
+                    return in.receive()
+                            .asString()
+                            .doOnNext(this::handleMessage)
+                            .doFinally(signalType -> this.publicOutbound = null)
+                            .then();
+                })
+                .retryWhen(reactor.util.retry.Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1))
+                        .maxBackoff(Duration.ofSeconds(30))
+                        .doBeforeRetry(signal -> log.warn("binance public multiplex reconnect attempt={}", signal.totalRetriesInARow() + 1)))
                 .subscribe();
     }
 
@@ -110,6 +138,11 @@ public class MultiPlexManager {
         if (subscriptions.remove(stream)) {
             log.info("unsubscribe upstream stream={}", stream);
             sendMessage(buildUnsubscribeMessage(stream));
+            return;
+        }
+        if (publicSubscriptions.remove(stream)) {
+            log.info("unsubscribe public upstream stream={}", stream);
+            sendPublicMessage(buildUnsubscribeMessage(stream));
         }
     }
 
@@ -139,17 +172,42 @@ public class MultiPlexManager {
         unsubscribe(symbol.toLowerCase() + "@ticker");
     }
 
+    public void subscribeDepth(String symbol) {
+        String stream = symbol.toLowerCase() + "@depth20@100ms";
+        if (publicSubscriptions.add(stream)) {
+            log.info("subscribe public upstream stream={}", stream);
+            ensurePublicConnection();
+            sendPublicMessage(buildSubscribeMessage(stream));
+        }
+    }
+
+    public void unsubscribeDepth(String symbol) {
+        String stream = symbol.toLowerCase() + "@depth20@100ms";
+        if (publicSubscriptions.remove(stream)) {
+            log.info("unsubscribe public upstream stream={}", stream);
+            sendPublicMessage(buildUnsubscribeMessage(stream));
+        }
+    }
+
     public int activeConnectionCount() {
-        return outbound == null || connection == null || connection.isDisposed() ? 0 : 1;
+        int marketCount = outbound == null || connection == null || connection.isDisposed() ? 0 : 1;
+        int publicCount = publicOutbound == null || publicConnection == null || publicConnection.isDisposed() ? 0 : 1;
+        return marketCount + publicCount;
     }
 
     public int subscriptionCount() {
-        return subscriptions.size();
+        return subscriptions.size() + publicSubscriptions.size();
     }
 
     private void resendSubscriptions() {
         subscriptions.forEach(stream ->
                 sendMessage(buildSubscribeMessage(stream))
+        );
+    }
+
+    private void resendPublicSubscriptions() {
+        publicSubscriptions.forEach(stream ->
+                sendPublicMessage(buildSubscribeMessage(stream))
         );
     }
 
@@ -159,14 +217,30 @@ public class MultiPlexManager {
         }
     }
 
-    private void sendPing() {
-        if (outbound == null || subscriptions.isEmpty()) {
-            return;
+    private void sendPublicMessage(String msg) {
+        if (publicOutbound != null) {
+            publicOutbound.sendString(Mono.just(msg)).then().subscribe();
         }
+    }
+
+    private void ensurePublicConnection() {
+        if (publicConnection == null || publicConnection.isDisposed()) {
+            connectPublic();
+        }
+    }
+
+    private void sendPing() {
         try {
-            outbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
-                    .then()
-                    .subscribe();
+            if (outbound != null && !subscriptions.isEmpty()) {
+                outbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
+                        .then()
+                        .subscribe();
+            }
+            if (publicOutbound != null && !publicSubscriptions.isEmpty()) {
+                publicOutbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
+                        .then()
+                        .subscribe();
+            }
         } catch (Exception e) {
             log.warn("binance multiplex ping failed, reconnect", e);
             reconnect();
@@ -250,6 +324,11 @@ public class MultiPlexManager {
 
             if (payload.has("e") && "24hrTicker".equals(payload.get("e").asString())) {
                 monitorService.pushTicker(payload.get("s").asString(), payloadJson);
+                return;
+            }
+
+            if (payload.has("e") && "depthUpdate".equals(payload.get("e").asString())) {
+                monitorService.pushDepth(payload.get("s").asString(), payloadJson);
                 return;
             }
 

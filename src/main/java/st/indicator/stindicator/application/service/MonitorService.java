@@ -79,6 +79,50 @@ public class MonitorService {
 
     public void pushTicker(String symbol, String payload) {
         String streamKey = toTickerStreamKey(symbol);
+        pushRawPayload(streamKey, payload, "ticker");
+    }
+
+    public void subscribeDepth(WebSocketSession session, List<String> symbols) {
+        logger.info("start depth subscribe: {}", symbols);
+        for (String symbol : symbols) {
+            String streamKey = toDepthStreamKey(symbol);
+            streamSubscribers.computeIfAbsent(streamKey, ignored -> ConcurrentHashMap.newKeySet()).add(session);
+            sessionSubscriptions.computeIfAbsent(session.getId(), ignored -> ConcurrentHashMap.newKeySet()).add(streamKey);
+        }
+    }
+
+    public Set<String> unsubscribeDepth(WebSocketSession session, List<String> symbols) {
+        Set<String> releasedStreams = new HashSet<>();
+        Set<String> sessionStreams = sessionSubscriptions.get(session.getId());
+
+        symbols.forEach(symbol -> {
+            String streamKey = toDepthStreamKey(symbol);
+            Set<WebSocketSession> sessions = streamSubscribers.get(streamKey);
+            if (sessions == null) {
+                return;
+            }
+            sessions.remove(session);
+            if (sessionStreams != null) {
+                sessionStreams.remove(streamKey);
+            }
+            if (sessions.isEmpty()) {
+                streamSubscribers.remove(streamKey);
+                releasedStreams.add(streamKey);
+            }
+        });
+
+        if (sessionStreams != null && sessionStreams.isEmpty()) {
+            sessionSubscriptions.remove(session.getId());
+        }
+
+        return releasedStreams;
+    }
+
+    public void pushDepth(String symbol, String payload) {
+        pushRawPayload(toDepthStreamKey(symbol), payload, "depth");
+    }
+
+    private void pushRawPayload(String streamKey, String payload, String eventName) {
         Set<WebSocketSession> sessions = streamSubscribers.get(streamKey);
 
         if (sessions != null) {
@@ -91,7 +135,7 @@ public class MonitorService {
                     logger.info("Send Massage Failed Disconnect Session : {}", session.getId());
                     return true;
                 } catch (Exception e) {
-                    logger.warn("ticker event send failed session={}, stream={}", session.getId(), streamKey, e);
+                    logger.warn("{} event send failed session={}, stream={}", eventName, session.getId(), streamKey, e);
                     return true;
                 }
             });
@@ -215,5 +259,9 @@ public class MonitorService {
 
     private String toTickerStreamKey(String symbol) {
         return symbol.toLowerCase() + "@ticker";
+    }
+
+    private String toDepthStreamKey(String symbol) {
+        return symbol.toLowerCase() + "@depth20@100ms";
     }
 }

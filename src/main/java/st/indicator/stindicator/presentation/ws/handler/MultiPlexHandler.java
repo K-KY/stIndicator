@@ -28,6 +28,8 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(MultiPlexHandler.class);
     private static final String SUBSCRIBE = "SUBSCRIBE";
     private static final String UNSUBSCRIBE = "UNSUBSCRIBE";
+    private static final String SUBSCRIBE_DEPTH = "SUBSCRIBE_DEPTH";
+    private static final String UNSUBSCRIBE_DEPTH = "UNSUBSCRIBE_DEPTH";
     private final ObjectMapper objectMapper;
     private final MonitorService monitorService;
     private final MultiPlexManager multiPlexManager;
@@ -70,9 +72,18 @@ public class MultiPlexHandler extends TextWebSocketHandler {
                 multiPlexManager.subscribeTicker(symbol);
             });
         }
+        if (Objects.equals(req.getType(), SUBSCRIBE_DEPTH)) {
+            log.info("subscribe depth request: {}", req.getSymbols());
+            monitorService.subscribeDepth(session, req.getSymbols());
+            req.getSymbols().forEach(multiPlexManager::subscribeDepth);
+        }
         if (Objects.equals(req.getType(), UNSUBSCRIBE)) {
             marketSubscriptionService.unsubscribe(sessionUserId(session), req.getSymbols());
             monitorService.unsubscribe(session, req)
+                    .forEach(this::releaseUpstreamWhenUnused);
+        }
+        if (Objects.equals(req.getType(), UNSUBSCRIBE_DEPTH)) {
+            monitorService.unsubscribeDepth(session, req.getSymbols())
                     .forEach(this::releaseUpstreamWhenUnused);
         }
     }
