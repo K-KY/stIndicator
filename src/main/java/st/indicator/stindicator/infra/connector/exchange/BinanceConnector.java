@@ -23,13 +23,13 @@ import java.util.Map;
 
 @Component
 public class BinanceConnector implements ExchangeConnector {
+    private static final String ACCOUNT_PATH = "https://fapi.binance.com/fapi/v3/account";
+    private static final String TOTAL_WALLET_BALANCE = "totalWalletBalance";
     private static final String CANDLE_PATH = "https://fapi.binance.com/fapi/v1/klines";
-    private static final String ACCOUNT_PATH = "https://fapi.binance.com/fapi/v2/account";
     private static final String ORDER_PATH = "https://fapi.binance.com/fapi/v1/order";
     private static final String POSITION_RISK_PATH = "https://fapi.binance.com/fapi/v2/positionRisk";
     private static final String EXCHANGE_INFO_PATH = "https://fapi.binance.com/fapi/v1/exchangeInfo";
     private static final String PRICE_PATH = "https://fapi.binance.com/fapi/v1/ticker/price";
-    private static final String TOTAL_WALLET_BALANCE = "totalWalletBalance";
     private static final String AVAILABLE_BALANCE = "availableBalance";
     private static final CandleMapper candleMapper = new CandleMapper();
     private final ExchangeClient exchangeClient;
@@ -43,27 +43,31 @@ public class BinanceConnector implements ExchangeConnector {
     public List<Candle> getCandles(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String s = exchangeClient.get(CANDLE_PATH, params);
+        assertBinanceSuccess(s, "candles");
         return candleMapper.map(s);
     }
 
     public BigDecimal getBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String s = exchangeClient.get(ACCOUNT_PATH, params);
-        return BigDecimal.valueOf(objectMapper.readTree(s).get(TOTAL_WALLET_BALANCE).asDouble());
+        JsonNode account = readSuccessTree(s, "account balance");
+        return requiredDecimal(account, TOTAL_WALLET_BALANCE, "account balance");
     }
 
     @Override
     public BigDecimal getAvailableBalance(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String s = exchangeClient.get(ACCOUNT_PATH, params);
-        return BigDecimal.valueOf(objectMapper.readTree(s).get(AVAILABLE_BALANCE).asDouble());
+        JsonNode account = readSuccessTree(s, "available balance");
+        return requiredDecimal(account, AVAILABLE_BALANCE, "available balance");
     }
 
     @Override
     public List<AssetBalance> getAssets(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String response = exchangeClient.get(ACCOUNT_PATH, params);
-        JsonNode assetsNode = objectMapper.readTree(response).get("assets");
+        JsonNode root = readSuccessTree(response, "account assets");
+        JsonNode assetsNode = requiredNode(root, "assets", "account assets");
         List<AssetBalance> assets = new ArrayList<>();
         for (JsonNode assetNode : assetsNode) {
             BigDecimal walletBalance = decimal(assetNode, "walletBalance");
@@ -88,7 +92,7 @@ public class BinanceConnector implements ExchangeConnector {
     public List<PositionRisk> getPositions(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String response = exchangeClient.get(POSITION_RISK_PATH, params);
-        JsonNode positionsNode = objectMapper.readTree(response);
+        JsonNode positionsNode = readSuccessTree(response, "position risk");
         List<PositionRisk> positions = new ArrayList<>();
         for (JsonNode positionNode : positionsNode) {
             BigDecimal positionAmt = decimal(positionNode, "positionAmt");
@@ -112,7 +116,8 @@ public class BinanceConnector implements ExchangeConnector {
     public List<ExchangeSymbol> getExchangeSymbols() throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String response = exchangeClient.get(EXCHANGE_INFO_PATH, Map.of());
-        JsonNode symbolsNode = objectMapper.readTree(response).get("symbols");
+        JsonNode root = readSuccessTree(response, "exchange info");
+        JsonNode symbolsNode = requiredNode(root, "symbols", "exchange info");
         List<ExchangeSymbol> symbols = new ArrayList<>();
         for (JsonNode symbolNode : symbolsNode) {
             if (!"TRADING".equalsIgnoreCase(symbolNode.get("status").asText())) {
@@ -138,8 +143,8 @@ public class BinanceConnector implements ExchangeConnector {
     public SymbolPrice getPrice(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
         String response = exchangeClient.get(PRICE_PATH, params);
-        JsonNode priceNode = objectMapper.readTree(response);
-        return new SymbolPrice(priceNode.get("symbol").asText(), decimal(priceNode, "price"));
+        JsonNode priceNode = readSuccessTree(response, "symbol price");
+        return new SymbolPrice(requiredText(priceNode, "symbol", "symbol price"), requiredDecimal(priceNode, "price", "symbol price"));
     }
 
     @Override
@@ -185,6 +190,39 @@ public class BinanceConnector implements ExchangeConnector {
             return BigDecimal.ZERO;
         }
         return new BigDecimal(valueNode.asText());
+    }
+
+    private JsonNode readSuccessTree(String response, String operation) throws IOException {
+        JsonNode root = objectMapper.readTree(response);
+        throwIfBinanceError(root, operation);
+        return root;
+    }
+
+    private void assertBinanceSuccess(String response, String operation) throws IOException {
+        throwIfBinanceError(objectMapper.readTree(response), operation);
+    }
+
+    private void throwIfBinanceError(JsonNode root, String operation) {
+        if (root != null && root.has("code") && root.has("msg")) {
+            throw new IllegalStateException("Binance " + operation + " failed code="
+                    + root.get("code").asText() + ", msg=" + root.get("msg").asText());
+        }
+    }
+
+    private JsonNode requiredNode(JsonNode node, String fieldName, String operation) {
+        JsonNode valueNode = node == null ? null : node.get(fieldName);
+        if (valueNode == null || valueNode.isNull()) {
+            throw new IllegalStateException("Binance " + operation + " response missing field: " + fieldName);
+        }
+        return valueNode;
+    }
+
+    private BigDecimal requiredDecimal(JsonNode node, String fieldName, String operation) {
+        return new BigDecimal(requiredNode(node, fieldName, operation).asText());
+    }
+
+    private String requiredText(JsonNode node, String fieldName, String operation) {
+        return requiredNode(node, fieldName, operation).asText();
     }
 
     private BigDecimal filterDecimal(JsonNode symbolNode, String filterType, String fieldName) {
