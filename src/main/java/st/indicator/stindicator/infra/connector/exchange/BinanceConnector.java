@@ -172,6 +172,24 @@ public class BinanceConnector implements ExchangeConnector {
     public Order orderDetail(Map<String, String> params) {
         try {
             String order = exchangeClient.get(ORDER_PATH, params);
+            assertBinanceSuccess(order, "order detail");
+            return objectMapper.readValue(order, Order.class);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        } catch (InvalidKeyException e) {
+            throw new RuntimeException(e);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public Order cancelOrder(Map<String, String> params) {
+        try {
+            String order = exchangeClient.delete(ORDER_PATH, params);
+            assertBinanceSuccess(order, "order cancel");
             return objectMapper.readValue(order, Order.class);
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);

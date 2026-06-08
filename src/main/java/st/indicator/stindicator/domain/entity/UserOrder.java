@@ -17,16 +17,26 @@ public class UserOrder {
     private String quantity;
     // 사용자가 저장한 주문 가격
     private String price;
+    // 거래소 주문 상태 또는 서비스 저장 상태
+    private String status;
+    // 서비스에 주문 이력이 저장된 시각
+    private java.time.LocalDateTime createdAt;
 
     public UserOrder() {
     }
 
     public UserOrder(String orderId, String symbol, String side, String type, String timeInForce, String quantity, String price) {
-        this(orderId, null, symbol, side, type, timeInForce, quantity, price);
+        this(orderId, null, symbol, side, type, timeInForce, quantity, price, "SAVED", null);
     }
 
     public UserOrder(String orderId, Long userId, String symbol, String side, String type,
                      String timeInForce, String quantity, String price) {
+        this(orderId, userId, symbol, side, type, timeInForce, quantity, price, "SAVED", null);
+    }
+
+    public UserOrder(String orderId, Long userId, String symbol, String side, String type,
+                     String timeInForce, String quantity, String price, String status,
+                     java.time.LocalDateTime createdAt) {
         this.orderId = orderId;
         this.userId = userId;
         this.symbol = symbol;
@@ -35,6 +45,8 @@ public class UserOrder {
         this.timeInForce = timeInForce;
         this.quantity = quantity;
         this.price = price;
+        this.status = status;
+        this.createdAt = createdAt;
     }
 
     public String getOrderId() {
@@ -67,5 +79,13 @@ public class UserOrder {
 
     public String getPrice() {
         return price;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public java.time.LocalDateTime getCreatedAt() {
+        return createdAt;
     }
 }

@@ -122,4 +122,13 @@ public interface ClientApi {
     Order getOrderDetail(
             @RequestParam @Parameter(description = "조회할 심볼", example = "BTCUSDT") String symbol,
             @RequestParam @Parameter(description = "조회할 주문 ID") String orderId);
+
+    @PostMapping("/order/cancel")
+    @Operation(summary = "주문 취소", description = "거래소 미체결 주문을 취소하고 서비스 주문 이력 상태를 갱신한다.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "주문 취소 성공")
+    })
+    Order cancelOrder(
+            @RequestParam @Parameter(description = "취소할 주문 심볼", example = "BTCUSDT") String symbol,
+            @RequestParam @Parameter(description = "취소할 주문 ID") String orderId);
 }

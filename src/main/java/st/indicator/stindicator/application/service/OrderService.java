@@ -50,18 +50,29 @@ public class OrderService {
 
     public UserOrder save(String orderId, String symbol, String side, String type,
                           String timeInForce, String quantity, String price) {
-        UserOrder userOrder = new UserOrder(normalizeOrderId(orderId), symbol, side, type, timeInForce, quantity, price);
+        return save(orderId, symbol, side, type, timeInForce, quantity, price, "SAVED");
+    }
+
+    public UserOrder save(String orderId, String symbol, String side, String type,
+                          String timeInForce, String quantity, String price, String status) {
+        UserOrder userOrder = new UserOrder(normalizeOrderId(orderId), null, symbol, side, type,
+                timeInForce, quantity, price, status, null);
         orderRepository.saveOrder(userOrder);
         return userOrder;
     }
 
     public UserOrder save(Long userId, String orderId, String symbol, String side, String type,
                           String timeInForce, String quantity, String price) {
+        return save(userId, orderId, symbol, side, type, timeInForce, quantity, price, "SAVED");
+    }
+
+    public UserOrder save(Long userId, String orderId, String symbol, String side, String type,
+                          String timeInForce, String quantity, String price, String status) {
         if (userId == null) {
-            return save(orderId, symbol, side, type, timeInForce, quantity, price);
+            return save(orderId, symbol, side, type, timeInForce, quantity, price, status);
         }
         UserOrder userOrder = new UserOrder(normalizeOrderId(orderId), userId, symbol, side, type,
-                timeInForce, quantity, price);
+                timeInForce, quantity, price, status, null);
         orderRepository.saveOrder(userOrder);
         return userOrder;
     }
@@ -80,7 +91,7 @@ public class OrderService {
                 null
         ));
         save(userId, order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
-                order.getTimeInForce(), order.getOrigQty().toPlainString(), stringifyPrice(order));
+                order.getTimeInForce(), order.getOrigQty().toPlainString(), stringifyPrice(order), order.getStatus());
         return order;
     }
 
@@ -95,7 +106,7 @@ public class OrderService {
                 price.toPlainString()
         ));
         save(userId, order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
-                order.getTimeInForce(), order.getOrigQty().toPlainString(), stringifyPrice(order));
+                order.getTimeInForce(), order.getOrigQty().toPlainString(), stringifyPrice(order), order.getStatus());
         return order;
     }
 
@@ -119,7 +130,13 @@ public class OrderService {
                 price
         ));
         save(positionMonitor.getUserId(), order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
-                order.getTimeInForce(), order.getOrigQty().toPlainString(), stringifyPrice(order));
+                order.getTimeInForce(), order.getOrigQty().toPlainString(), stringifyPrice(order), order.getStatus());
+        return order;
+    }
+
+    public Order cancelOrder(String symbol, String orderId) {
+        Order order = requireClientService().cancelOrder(symbol, orderId);
+        orderRepository.cancelOrder(orderId);
         return order;
     }
 

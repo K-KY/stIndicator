@@ -84,7 +84,8 @@ public class BinanceClient implements ClientService {
     public Order order(OrderCommand dto) {
         log.info("flow order start symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}",
                 dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(), dto.getQuantity(), dto.getPrice());
-        return placeOrder(dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(),
+        String symbol = requireText(dto.getSymbol(), "주문 심볼은 필수입니다.");
+        return placeOrder(symbol, dto.getSide(), dto.getType(), dto.getTimeInForce(),
                 dto.getQuantity(), dto.getPrice(), false);
     }
 
@@ -190,7 +191,23 @@ public class BinanceClient implements ClientService {
     @Override
     public Order getOrderDetail(String symbol, String orderId) {
         log.info("flow getOrderDetail start symbol={}, orderId={}", symbol, orderId);
-        return exchangeConnector.orderDetail(Map.of("symbol", symbol, "orderId", orderId));
+        return exchangeConnector.orderDetail(Map.of(
+                "symbol", requireText(symbol, "주문 상세 조회 심볼은 필수입니다."),
+                "orderId", requireText(orderId, "주문 ID는 필수입니다."),
+                "timestamp", String.valueOf(System.currentTimeMillis())
+        ));
+    }
+
+    @Override
+    public Order cancelOrder(String symbol, String orderId) {
+        log.info("flow cancelOrder start symbol={}, orderId={}", symbol, orderId);
+        Order order = exchangeConnector.cancelOrder(Map.of(
+                "symbol", requireText(symbol, "주문 취소 심볼은 필수입니다."),
+                "orderId", requireText(orderId, "주문 ID는 필수입니다."),
+                "timestamp", String.valueOf(System.currentTimeMillis())
+        ));
+        log.info("flow cancelOrder done symbol={}, orderId={}, status={}", order.getSymbol(), order.getOrderId(), order.getStatus());
+        return order;
     }
 
 
@@ -334,7 +351,7 @@ public class BinanceClient implements ClientService {
     }
 
     private OrderSymbolRule orderRule(String symbol) {
-        String normalizedSymbol = symbol.toUpperCase(Locale.ROOT);
+        String normalizedSymbol = requireText(symbol, "주문 심볼은 필수입니다.").toUpperCase(Locale.ROOT);
         return orderRuleCache.computeIfAbsent(normalizedSymbol, this::loadOrderRule);
     }
 
@@ -395,6 +412,13 @@ public class BinanceClient implements ClientService {
 
     private String valueOrDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value;
+    }
+
+    private String requireText(String value, String message) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(message);
+        }
+        return value.trim();
     }
 
     private record OrderSymbolRule(BigDecimal quantityStepSize, BigDecimal minQuantity, BigDecimal priceTickSize) {

@@ -54,6 +54,30 @@ public class OrderRequestDto {
         return price;
     }
 
+    public void setSymbol(String symbol) {
+        this.symbol = symbol;
+    }
+
+    public void setSide(String side) {
+        this.side = side;
+    }
+
+    public void setType(String type) {
+        this.type = type;
+    }
+
+    public void setTimeInForce(String timeInForce) {
+        this.timeInForce = timeInForce;
+    }
+
+    public void setQuantity(String quantity) {
+        this.quantity = quantity;
+    }
+
+    public void setPrice(String price) {
+        this.price = price;
+    }
+
     public OrderCommand toCommand() {
         return new OrderCommand(symbol, side, type, timeInForce, quantity, price);
     }

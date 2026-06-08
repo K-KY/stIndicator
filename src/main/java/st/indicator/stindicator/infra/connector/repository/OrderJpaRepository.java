@@ -8,5 +8,5 @@ import java.util.List;
 
 @Repository
 public interface OrderJpaRepository extends JpaRepository<UserOrderEntity, String> {
-    List<UserOrderEntity> findAllBySymbol(String symbol);
+    List<UserOrderEntity> findAllBySymbolOrderByCreatedAtDesc(String symbol);
 }

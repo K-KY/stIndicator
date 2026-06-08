@@ -4,7 +4,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import st.indicator.stindicator.domain.entity.UserOrder;
+
+import java.time.LocalDateTime;
 
 @Entity
 public class UserOrderEntity {
@@ -22,6 +26,9 @@ public class UserOrderEntity {
     String timeInForce;
     String quantity;
     String price;
+    String status;
+    LocalDateTime createdAt;
+    LocalDateTime updatedAt;
 
     public UserOrderEntity() {
     }
@@ -32,6 +39,11 @@ public class UserOrderEntity {
 
     public UserOrderEntity(String orderId, Long userId, String symbol, String side, String type,
                            String timeInForce, String quantity, String price) {
+        this(orderId, userId, symbol, side, type, timeInForce, quantity, price, "SAVED", null);
+    }
+
+    public UserOrderEntity(String orderId, Long userId, String symbol, String side, String type,
+                           String timeInForce, String quantity, String price, String status, LocalDateTime createdAt) {
         this.orderId = orderId;
         this.user = userId == null ? null : UserEntity.reference(userId);
         this.symbol = symbol;
@@ -40,6 +52,22 @@ public class UserOrderEntity {
         this.timeInForce = timeInForce;
         this.quantity = quantity;
         this.price = price;
+        this.status = status == null || status.isBlank() ? "SAVED" : status;
+        this.createdAt = createdAt;
+    }
+
+    @PrePersist
+    public void onCreate() {
+        LocalDateTime now = LocalDateTime.now();
+        if (createdAt == null) {
+            createdAt = now;
+        }
+        updatedAt = now;
+    }
+
+    @PreUpdate
+    public void onUpdate() {
+        updatedAt = LocalDateTime.now();
     }
 
     public String getOrderId() {
@@ -74,14 +102,27 @@ public class UserOrderEntity {
         return price;
     }
 
+    public String getStatus() {
+        return status;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public void updateStatus(String status) {
+        this.status = status;
+    }
+
     public static UserOrderEntity from(UserOrder userOrder) {
         return new UserOrderEntity(userOrder.getOrderId(), userOrder.getUserId(), userOrder.getSymbol(),
                 userOrder.getSide(), userOrder.getType(), userOrder.getTimeInForce(),
-                userOrder.getQuantity(), userOrder.getPrice());
+                userOrder.getQuantity(), userOrder.getPrice(), userOrder.getStatus(), userOrder.getCreatedAt());
     }
 
     public UserOrder toDomain() {
         Long userId = user == null ? null : user.getId();
-        return new UserOrder(orderId, userId, symbol, side, type, timeInForce, quantity, price);
+        return new UserOrder(orderId, userId, symbol, side, type, timeInForce, quantity, price,
+                status == null ? "SAVED" : status, createdAt);
     }
 }

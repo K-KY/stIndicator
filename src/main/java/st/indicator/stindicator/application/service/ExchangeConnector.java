@@ -32,4 +32,5 @@ public interface ExchangeConnector {
             InvalidKeyException, InterruptedException;
     Order orderDetail(Map<String, String> params);
     Order order(Map<String, String> params);
+    Order cancelOrder(Map<String, String> params);
 }

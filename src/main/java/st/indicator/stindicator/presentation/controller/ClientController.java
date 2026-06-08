@@ -135,7 +135,7 @@ public class ClientController implements ClientApi {
         Order order = clientService.orderByAtr(dto.toCommand());
         Long userId = sessionUserId(session);
         orderService.save(userId, order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
-                order.getTimeInForce(), toPlainString(order.getOrigQty()), toPlainString(order.getPrice()));
+                order.getTimeInForce(), toPlainString(order.getOrigQty()), toPlainString(order.getPrice()), order.getStatus());
         return order;
     }
 
@@ -162,7 +162,8 @@ public class ClientController implements ClientApi {
         log.info("request order symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}",
                 dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(), dto.getQuantity(), dto.getPrice());
         Order order = clientService.order(dto.toCommand());
-        orderService.save(sessionUserId(session), order.getOrderId(), dto.toCommand());// 사용자 주문 저장
+        orderService.save(sessionUserId(session), order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
+                order.getTimeInForce(), toPlainString(order.getOrigQty()), toPlainString(order.getPrice()), order.getStatus());// 사용자 주문 저장
         return order;
     }
 
@@ -186,6 +187,12 @@ public class ClientController implements ClientApi {
             String orderId) {
         log.info("request getOrderDetail symbol={}, orderId={}", symbol, orderId);
         return clientService.getOrderDetail(symbol, orderId);
+    }
+
+    @Override
+    public Order cancelOrder(String symbol, String orderId) {
+        log.info("request cancelOrder symbol={}, orderId={}", symbol, orderId);
+        return orderService.cancelOrder(symbol, orderId);
     }
 
     private String toPlainString(BigDecimal value) {
