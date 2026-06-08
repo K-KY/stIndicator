@@ -16,12 +16,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 public class MonitorService {
     private final MonitorRepository monitorRepository;
     private final Map<String, Set<WebSocketSession>> streamSubscribers = new ConcurrentHashMap<>();
     private final Map<String, Set<String>> sessionSubscriptions = new ConcurrentHashMap<>();
+    private final Map<String, ReentrantLock> sessionSendLocks = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Logger logger = LoggerFactory.getLogger(MonitorService.class);
 
@@ -47,7 +49,7 @@ public class MonitorService {
             if (latest != null) {
                 try {
                     logger.info("Subscribe Symbol, Push Latest {} Data", streamKey);
-                    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(latest)));
+                    sendText(session, objectMapper.writeValueAsString(latest), "latestKline", streamKey, false);
                 } catch (Exception e) {
                     logger.warn("latest kline send failed session={}, stream={}", session.getId(), streamKey, e);
                 }
@@ -62,17 +64,8 @@ public class MonitorService {
 
         if (sessions != null) {
             sessions.removeIf(session -> {
-                try {
-                    if (session.isOpen()) {
-                        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(dto)));
-                        return false;
-                    }
-                    logger.info("Send Massage Failed Disconnect Session : {}", session.getId());
-                    return true;
-                } catch (Exception e) {
-                    logger.warn("kline event send failed session={}, stream={}", session.getId(), streamKey, e);
-                    return true;
-                }
+                String payload = objectMapper.writeValueAsString(dto);
+                return !sendText(session, payload, "kline", streamKey, false);
             });
         }
     }
@@ -127,17 +120,8 @@ public class MonitorService {
 
         if (sessions != null) {
             sessions.removeIf(session -> {
-                try {
-                    if (session.isOpen()) {
-                        session.sendMessage(new TextMessage(payload));
-                        return false;
-                    }
-                    logger.info("Send Massage Failed Disconnect Session : {}", session.getId());
-                    return true;
-                } catch (Exception e) {
-                    logger.warn("{} event send failed session={}, stream={}", eventName, session.getId(), streamKey, e);
-                    return true;
-                }
+                boolean dropIfBusy = "depth".equals(eventName);
+                return !sendText(session, payload, eventName, streamKey, dropIfBusy);
             });
         }
     }
@@ -168,6 +152,7 @@ public class MonitorService {
 
         if (sessionStreams != null && sessionStreams.isEmpty()) {
             sessionSubscriptions.remove(session.getId());
+            sessionSendLocks.remove(session.getId());
         }
 
         return releasedStreams;
@@ -193,6 +178,7 @@ public class MonitorService {
                 }
             });
         }
+        sessionSendLocks.remove(session.getId());
 
         return releasedStreams;
     }
@@ -214,11 +200,9 @@ public class MonitorService {
 
         targetSessions.forEach(session -> {
             try {
-                if (session.isOpen()) {
-                    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(event)));
-                    return;
+                if (!sendText(session, objectMapper.writeValueAsString(event), "monitor", symbol, false)) {
+                    staleSessions.add(session);
                 }
-                staleSessions.add(session);
             } catch (Exception e) {
                 logger.warn("monitor event send failed session={}, symbol={}", session.getId(), symbol, e);
                 staleSessions.add(session);
@@ -263,5 +247,38 @@ public class MonitorService {
 
     private String toDepthStreamKey(String symbol) {
         return symbol.toLowerCase() + "@depth20@100ms";
+    }
+
+    private boolean sendText(WebSocketSession session, String payload, String eventName, String streamKey, boolean dropIfBusy) {
+        if (!session.isOpen()) {
+            logger.info("Send Message Failed Disconnect Session : {}", session.getId());
+            sessionSendLocks.remove(session.getId());
+            return false;
+        }
+
+        ReentrantLock lock = sessionSendLocks.computeIfAbsent(session.getId(), ignored -> new ReentrantLock());
+        boolean locked = lock.tryLock();
+        if (!locked) {
+            if (!dropIfBusy) {
+                lock.lock();
+            } else {
+                logger.debug("drop busy websocket frame event={}, session={}, stream={}", eventName, session.getId(), streamKey);
+                return true;
+            }
+        }
+
+        try {
+            session.sendMessage(new TextMessage(payload));
+            return true;
+        } catch (IllegalStateException e) {
+            logger.debug("websocket session busy event={}, session={}, stream={}", eventName, session.getId(), streamKey);
+            return true;
+        } catch (Exception e) {
+            logger.warn("{} event send failed session={}, stream={}", eventName, session.getId(), streamKey, e);
+            sessionSendLocks.remove(session.getId());
+            return false;
+        } finally {
+            lock.unlock();
+        }
     }
 }
