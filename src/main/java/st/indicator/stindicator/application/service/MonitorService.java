@@ -195,6 +195,19 @@ public class MonitorService {
         return sessions != null && !sessions.isEmpty();
     }
 
+    public boolean hasStreamSubscribers(String streamKey) {
+        Set<WebSocketSession> sessions = streamSubscribers.get(streamKey);
+        if (sessions == null) {
+            return false;
+        }
+        sessions.removeIf(session -> !session.isOpen());
+        if (sessions.isEmpty()) {
+            streamSubscribers.remove(streamKey);
+            return false;
+        }
+        return true;
+    }
+
     private String toKlineStreamKey(String symbol, String interval) {
         String normalizedInterval = interval == null || interval.isBlank() ? "1m" : interval.toLowerCase();
         return symbol.toLowerCase() + "@kline_" + normalizedInterval;
