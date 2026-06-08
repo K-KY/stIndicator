@@ -118,11 +118,17 @@ public class BinanceConnector implements ExchangeConnector {
             if (!"TRADING".equalsIgnoreCase(symbolNode.get("status").asText())) {
                 continue;
             }
+            BigDecimal quantityStepSize = filterDecimal(symbolNode, "LOT_SIZE", "stepSize");
+            BigDecimal minQuantity = filterDecimal(symbolNode, "LOT_SIZE", "minQty");
+            BigDecimal priceTickSize = filterDecimal(symbolNode, "PRICE_FILTER", "tickSize");
             symbols.add(new ExchangeSymbol(
                     symbolNode.get("symbol").asText(),
                     symbolNode.get("baseAsset").asText(),
                     symbolNode.get("quoteAsset").asText(),
-                    symbolNode.get("status").asText()
+                    symbolNode.get("status").asText(),
+                    quantityStepSize,
+                    minQuantity,
+                    priceTickSize
             ));
         }
         return symbols;
@@ -140,6 +146,11 @@ public class BinanceConnector implements ExchangeConnector {
     public Order order(Map<String, String> params) {
         try {
             String order = exchangeClient.post(ORDER_PATH, params);
+            JsonNode response = objectMapper.readTree(order);
+            if (response.has("code") && response.has("msg")) {
+                throw new IllegalStateException("Binance order failed code=" + response.get("code").asText()
+                        + ", msg=" + response.get("msg").asText());
+            }
             return objectMapper.readValue(order, Order.class);
         } catch (NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
@@ -174,5 +185,20 @@ public class BinanceConnector implements ExchangeConnector {
             return BigDecimal.ZERO;
         }
         return new BigDecimal(valueNode.asText());
+    }
+
+    private BigDecimal filterDecimal(JsonNode symbolNode, String filterType, String fieldName) {
+        JsonNode filters = symbolNode.get("filters");
+        if (filters == null || !filters.isArray()) {
+            return null;
+        }
+        for (JsonNode filter : filters) {
+            JsonNode type = filter.get("filterType");
+            if (type != null && filterType.equalsIgnoreCase(type.asText())) {
+                JsonNode value = filter.get(fieldName);
+                return value == null || value.isNull() ? null : new BigDecimal(value.asText());
+            }
+        }
+        return null;
     }
 }

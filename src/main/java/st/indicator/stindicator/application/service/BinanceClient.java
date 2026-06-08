@@ -18,18 +18,21 @@ import st.indicator.stindicator.domain.entity.SymbolPrice;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class BinanceClient implements ClientService {
     private static final Logger log = LoggerFactory.getLogger(BinanceClient.class);
     private final ExchangeConnector exchangeConnector;
     private final AtrPositionSizingService atrPositionSizingService;
+    private final Map<String, OrderSymbolRule> orderRuleCache = new ConcurrentHashMap<>();
 
     public BinanceClient(ExchangeConnector exchangeConnector, AtrPositionSizingService atrPositionSizingService) {
         this.exchangeConnector = exchangeConnector;
@@ -160,12 +163,16 @@ public class BinanceClient implements ClientService {
         log.info("flow orderByAtr start symbol={}, side={}, type={}, leverage={}",
                 dto.getSymbol(), dto.getSide(), dto.getType(), dto.getLeverage());
         AtrOrderPreview preview = previewAtrOrder(dto);
-        String price = dto.getEntryPrice() == null ? null : preview.getEntryPrice().toPlainString();
+        String type = resolveAtrOrderType(dto);
+        String timeInForce = "LIMIT".equals(type)
+                ? valueOrDefault(dto.getTimeInForce(), "GTC").toUpperCase(Locale.ROOT)
+                : null;
+        String price = "LIMIT".equals(type) ? preview.getEntryPrice().toPlainString() : null;
         Order order = placeOrder(
                 dto.getSymbol(),
                 dto.getSide(),
-                dto.getType(),
-                dto.getTimeInForce(),
+                type,
+                timeInForce,
                 preview.getQuantity().toPlainString(),
                 price,
                 false
@@ -240,26 +247,159 @@ public class BinanceClient implements ClientService {
         long timeMillis = System.currentTimeMillis();
         log.info("flow placeOrder start symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}, reduceOnly={}",
                 symbol, side, type, timeInForce, quantity, price, reduceOnly);
+        String normalizedType = type == null ? "MARKET" : type.toUpperCase(Locale.ROOT);
+        OrderSymbolRule orderRule = orderRule(symbol);
+        String adjustedQuantity = adjustQuantity(symbol, quantity, orderRule);
+        String adjustedPrice = "LIMIT".equals(normalizedType) ? adjustPrice(symbol, price, orderRule) : null;
         Map<String, String> params = new LinkedHashMap<>();
         params.put("symbol", symbol);
         params.put("side", side == null ? "BUY" : side.toUpperCase(Locale.ROOT));
-        params.put("type", type == null ? "MARKET" : type.toUpperCase(Locale.ROOT));
-        params.put("quantity", quantity);
+        params.put("type", normalizedType);
+        params.put("quantity", adjustedQuantity);
         params.put("timestamp", String.valueOf(timeMillis));
 
-        if (timeInForce != null && !timeInForce.isBlank()) {
+        if ("LIMIT".equals(normalizedType) && timeInForce != null && !timeInForce.isBlank()) {
             params.put("timeInForce", timeInForce.toUpperCase(Locale.ROOT));
         }
-        if (price != null && !price.isBlank()) {
-            params.put("price", price);
+        if ("LIMIT".equals(normalizedType) && adjustedPrice != null && !adjustedPrice.isBlank()) {
+            params.put("price", adjustedPrice);
         }
         if (reduceOnly) {
             params.put("reduceOnly", "true");
         }
 
-        Order order = exchangeConnector.order(params);
+        Order order = normalizeOrder(exchangeConnector.order(params), symbol, side, params.get("type"),
+                params.get("timeInForce"), adjustedQuantity, params.get("price"), reduceOnly);
         log.info("flow placeOrder done symbol={}, orderId={}, status={}, executedQty={}",
                 order.getSymbol(), order.getOrderId(), order.getStatus(), order.getExecutedQty());
         return order;
+    }
+
+    private String resolveAtrOrderType(AtrOrderCommand dto) {
+        if (dto.getEntryPrice() != null) {
+            return "LIMIT";
+        }
+        return dto.getType() == null || dto.getType().isBlank()
+                ? "MARKET"
+                : dto.getType().toUpperCase(Locale.ROOT);
+    }
+
+    private Order normalizeOrder(Order order, String symbol, String side, String type, String timeInForce,
+                                 String quantity, String price, boolean reduceOnly) {
+        if (order == null) {
+            return new Order(null, symbol, null, null, decimalOrZero(price), BigDecimal.ZERO,
+                    decimalOrZero(quantity), BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                    timeInForce, type, reduceOnly, false, side, null, BigDecimal.ZERO,
+                    null, false, type, null, null, null, null);
+        }
+
+        if (order.getOrigQty() != null && order.getPrice() != null
+                && order.getSymbol() != null && order.getSide() != null && order.getType() != null) {
+            return order;
+        }
+
+        return new Order(
+                order.getOrderId(),
+                valueOrDefault(order.getSymbol(), symbol),
+                order.getStatus(),
+                order.getClientOrderId(),
+                order.getPrice() == null ? decimalOrZero(price) : order.getPrice(),
+                order.getAvgPrice(),
+                order.getOrigQty() == null ? decimalOrZero(quantity) : order.getOrigQty(),
+                order.getExecutedQty(),
+                order.getCumQty(),
+                order.getCumQuote(),
+                valueOrDefault(order.getTimeInForce(), timeInForce),
+                valueOrDefault(order.getType(), type),
+                order.getReduceOnly() == null ? reduceOnly : order.getReduceOnly(),
+                order.getClosePosition(),
+                valueOrDefault(order.getSide(), side),
+                order.getPositionSide(),
+                order.getStopPrice(),
+                order.getWorkingType(),
+                order.getPriceProtect(),
+                valueOrDefault(order.getOrigType(), type),
+                order.getPriceMatch(),
+                order.getSelfTradePreventionMode(),
+                order.getGoodTillDate(),
+                order.getUpdateTime()
+        );
+    }
+
+    private BigDecimal decimalOrZero(String value) {
+        if (value == null || value.isBlank()) {
+            return BigDecimal.ZERO;
+        }
+        return new BigDecimal(value);
+    }
+
+    private OrderSymbolRule orderRule(String symbol) {
+        String normalizedSymbol = symbol.toUpperCase(Locale.ROOT);
+        return orderRuleCache.computeIfAbsent(normalizedSymbol, this::loadOrderRule);
+    }
+
+    private OrderSymbolRule loadOrderRule(String symbol) {
+        try {
+            return exchangeConnector.getExchangeSymbols().stream()
+                    .filter(exchangeSymbol -> exchangeSymbol.getSymbol().equalsIgnoreCase(symbol))
+                    .findFirst()
+                    .map(exchangeSymbol -> new OrderSymbolRule(
+                            exchangeSymbol.getQuantityStepSize(),
+                            exchangeSymbol.getMinQuantity(),
+                            exchangeSymbol.getPriceTickSize()
+                    ))
+                    .orElse(OrderSymbolRule.empty());
+        } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {
+            throw new RuntimeException("주문 심볼 필터 조회 실패: " + symbol, e);
+        }
+    }
+
+    private String adjustQuantity(String symbol, String quantity, OrderSymbolRule orderRule) {
+        BigDecimal value = decimalOrZero(quantity);
+        BigDecimal adjusted = floorToStep(value, orderRule.quantityStepSize());
+        if (orderRule.minQuantity() != null && adjusted.compareTo(orderRule.minQuantity()) < 0) {
+            throw new IllegalArgumentException("주문 수량이 최소 수량보다 작습니다. symbol=" + symbol
+                    + ", quantity=" + adjusted.toPlainString()
+                    + ", minQuantity=" + orderRule.minQuantity().toPlainString());
+        }
+        if (adjusted.compareTo(value) != 0) {
+            log.info("flow adjustOrderQuantity symbol={}, original={}, adjusted={}, stepSize={}",
+                    symbol, value.toPlainString(), adjusted.toPlainString(), orderRule.quantityStepSize());
+        }
+        return plain(adjusted);
+    }
+
+    private String adjustPrice(String symbol, String price, OrderSymbolRule orderRule) {
+        if (price == null || price.isBlank()) {
+            return null;
+        }
+        BigDecimal value = decimalOrZero(price);
+        BigDecimal adjusted = floorToStep(value, orderRule.priceTickSize());
+        if (adjusted.compareTo(value) != 0) {
+            log.info("flow adjustOrderPrice symbol={}, original={}, adjusted={}, tickSize={}",
+                    symbol, value.toPlainString(), adjusted.toPlainString(), orderRule.priceTickSize());
+        }
+        return plain(adjusted);
+    }
+
+    private BigDecimal floorToStep(BigDecimal value, BigDecimal step) {
+        if (step == null || step.signum() <= 0) {
+            return value;
+        }
+        return value.divide(step, 0, RoundingMode.DOWN).multiply(step);
+    }
+
+    private String plain(BigDecimal value) {
+        return value.stripTrailingZeros().toPlainString();
+    }
+
+    private String valueOrDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value;
+    }
+
+    private record OrderSymbolRule(BigDecimal quantityStepSize, BigDecimal minQuantity, BigDecimal priceTickSize) {
+        static OrderSymbolRule empty() {
+            return new OrderSymbolRule(null, null, null);
+        }
     }
 }
