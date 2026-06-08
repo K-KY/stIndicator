@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import st.indicator.stindicator.domain.entity.Order;
 
 import java.math.BigDecimal;
@@ -78,6 +80,10 @@ public class OrderEntity {
 
     @Id
     String orderId;
+
+    @ManyToOne
+    @JoinColumn(name = "user_id")
+    UserEntity user;
     // 주문 고유 ID (바이낸스가 생성)
     // 취소 / 조회할 때 필수
 

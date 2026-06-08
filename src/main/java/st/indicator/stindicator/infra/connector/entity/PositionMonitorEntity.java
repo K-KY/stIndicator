@@ -7,6 +7,8 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -25,8 +27,9 @@ public class PositionMonitorEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false)
-    private Long userId;
+    @ManyToOne(optional = false)
+    @JoinColumn(name = "user_id", nullable = false)
+    private UserEntity user;
 
     @Column(nullable = false, length = 30)
     private String symbol;
@@ -90,7 +93,7 @@ public class PositionMonitorEntity {
                                  MonitorOrderType closeOrderType, BigDecimal closeLimitPrice,
                                  PositionMonitorStatus status, LocalDateTime createdAt, LocalDateTime updatedAt) {
         this.id = id;
-        this.userId = userId;
+        this.user = UserEntity.reference(userId);
         this.symbol = symbol;
         this.direction = direction;
         this.entryPrice = entryPrice;
@@ -149,7 +152,7 @@ public class PositionMonitorEntity {
     public PositionMonitor toDomain() {
         return new PositionMonitor(
                 id,
-                userId,
+                user.getId(),
                 symbol,
                 direction,
                 entryPrice,
