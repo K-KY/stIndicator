@@ -1,12 +1,14 @@
 package st.indicator.stindicator.presentation.controller;
 
 import com.java.candle.Candle;
+import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.RestController;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.application.service.ClientService;
 import st.indicator.stindicator.application.service.OrderService;
+import st.indicator.stindicator.application.service.SessionUser;
 import st.indicator.stindicator.domain.entity.AssetBalance;
 import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
@@ -115,19 +117,25 @@ public class ClientController implements ClientApi {
         return clientService.previewAtrOrder(dto.toCommand());
     }
 
+    //테스트용 메서드
+    public Order orderByAtr(AtrOrderRequestDto dto) {
+        return orderByAtr(dto, null);
+    }
+
     /**
      * ATR 기준으로 계산한 수량으로 실제 Binance 주문을 실행한다.
      * 미리보기 로직을 먼저 수행한 뒤 계산된 quantity를 사용해 주문하고, 결과는 사용자 주문 이력에도 저장한다.
      */
     @Override
-    public Order orderByAtr(AtrOrderRequestDto dto) {
+    public Order orderByAtr(AtrOrderRequestDto dto, HttpSession session) {
         log.info("request orderByAtr symbol={}, side={}, interval={}, limit={}, atrPeriod={}, riskPercent={}, atrMultiplier={}, leverage={}, type={}, timeInForce={}, entryPrice={}",
                 dto.getSymbol(), dto.getSide(), dto.getInterval(), dto.getLimit(), dto.getAtrPeriod(),
                 dto.getRiskPercent(), dto.getAtrMultiplier(), dto.getLeverage(), dto.getType(),
                 dto.getTimeInForce(), dto.getEntryPrice());
         Order order = clientService.orderByAtr(dto.toCommand());
-        orderService.save(order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
-                order.getTimeInForce(), order.getOrigQty().toPlainString(), order.getPrice().toPlainString());
+        Long userId = sessionUserId(session);
+        orderService.save(userId, order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
+                order.getTimeInForce(), toPlainString(order.getOrigQty()), toPlainString(order.getPrice()));
         return order;
     }
 
@@ -145,12 +153,16 @@ public class ClientController implements ClientApi {
      * 사용자가 직접 지정한 수량과 가격으로 일반 주문을 실행한다.
      * ATR 계산 없이 바로 주문하고, 결과는 서비스 내부 주문 이력에도 함께 저장한다.
      */
-    @Override
     public Order order(OrderRequestDto dto) {
+        return order(dto, null);
+    }
+
+    @Override
+    public Order order(OrderRequestDto dto, HttpSession session) {
         log.info("request order symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}",
                 dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(), dto.getQuantity(), dto.getPrice());
         Order order = clientService.order(dto.toCommand());
-        orderService.save(order.getOrderId(), dto.toCommand());// 사용자 주문 저장
+        orderService.save(sessionUserId(session), order.getOrderId(), dto.toCommand());// 사용자 주문 저장
         return order;
     }
 
@@ -174,5 +186,14 @@ public class ClientController implements ClientApi {
             String orderId) {
         log.info("request getOrderDetail symbol={}, orderId={}", symbol, orderId);
         return clientService.getOrderDetail(symbol, orderId);
+    }
+
+    private String toPlainString(BigDecimal value) {
+        return value == null ? "0" : value.toPlainString();
+    }
+
+    private Long sessionUserId(HttpSession session) {
+        Object userId = session == null ? null : session.getAttribute(SessionUser.USER_ID);
+        return userId instanceof Long id ? id : null;
     }
 }

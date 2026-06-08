@@ -1,6 +1,7 @@
 package st.indicator.stindicator.presentation.controller;
 
 import com.java.candle.Candle;
+import jakarta.servlet.http.HttpSession;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -90,7 +91,7 @@ public interface ClientApi {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "ATR 주문 실행 성공")
     })
-    Order orderByAtr(@ParameterObject AtrOrderRequestDto dto);
+    Order orderByAtr(@ParameterObject AtrOrderRequestDto dto, @Parameter(hidden = true) HttpSession session);
 
     @PostMapping("/positions/liquidate")
     @Operation(summary = "포지션 시장가 청산", description = "현재 보유 중인 특정 심볼 포지션을 시장가 reduceOnly 주문으로 청산한다.")
@@ -104,7 +105,7 @@ public interface ClientApi {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "일반 주문 실행 성공")
     })
-    Order order(@ParameterObject OrderRequestDto dto);
+    Order order(@ParameterObject OrderRequestDto dto, @Parameter(hidden = true) HttpSession session);
 
     @GetMapping("/order")
     @Operation(summary = "서비스 주문 이력 조회", description = "서비스 내부에 저장된 사용자 주문 이력을 심볼 기준으로 조회한다.")

@@ -24,7 +24,9 @@ public class OrderRepositoryImpl implements OrderRepository {
 
     @Override
     public List<UserOrder> getOrders(String symbol) {
-        return orderRepository.findAllBySymbol(symbol);
+        return orderRepository.findAllBySymbol(symbol).stream()
+                .map(UserOrderEntity::toDomain)
+                .toList();
     }
 
     @Override

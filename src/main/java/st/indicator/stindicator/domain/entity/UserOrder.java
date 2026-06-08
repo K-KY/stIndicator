@@ -3,6 +3,8 @@ package st.indicator.stindicator.domain.entity;
 public class UserOrder {
     // 우리 서비스가 추적하는 거래소 주문 ID
     private String orderId;
+    // 주문을 실행한 서비스 사용자 ID. 비로그인 주문은 null일 수 있다.
+    private Long userId;
     // 사용자가 주문한 심볼
     private String symbol;
     // 주문 방향
@@ -20,7 +22,13 @@ public class UserOrder {
     }
 
     public UserOrder(String orderId, String symbol, String side, String type, String timeInForce, String quantity, String price) {
+        this(orderId, null, symbol, side, type, timeInForce, quantity, price);
+    }
+
+    public UserOrder(String orderId, Long userId, String symbol, String side, String type,
+                     String timeInForce, String quantity, String price) {
         this.orderId = orderId;
+        this.userId = userId;
         this.symbol = symbol;
         this.side = side;
         this.type = type;
@@ -31,6 +39,10 @@ public class UserOrder {
 
     public String getOrderId() {
         return orderId;
+    }
+
+    public Long getUserId() {
+        return userId;
     }
 
     public String getSymbol() {
