@@ -7,7 +7,9 @@ import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
+import st.indicator.stindicator.application.service.MarketSubscriptionService;
 import st.indicator.stindicator.application.service.MonitorService;
+import st.indicator.stindicator.application.service.SessionUser;
 import st.indicator.stindicator.infra.ws.MultiPlexManager;
 import st.indicator.stindicator.infra.ws.dto.binance.KlineEventDTO;
 import st.indicator.stindicator.presentation.dto.SymbolMonitorDto;
@@ -25,11 +27,14 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final MonitorService monitorService;
     private final MultiPlexManager multiPlexManager;
+    private final MarketSubscriptionService marketSubscriptionService;
 
-    public MultiPlexHandler(ObjectMapper objectMapper, MonitorService monitorService, MultiPlexManager multiPlexManager) {
+    public MultiPlexHandler(ObjectMapper objectMapper, MonitorService monitorService, MultiPlexManager multiPlexManager,
+                            MarketSubscriptionService marketSubscriptionService) {
         this.objectMapper = objectMapper;
         this.monitorService = monitorService;
         this.multiPlexManager = multiPlexManager;
+        this.marketSubscriptionService = marketSubscriptionService;
     }
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
@@ -37,6 +42,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         sessions.add(session);
+        restoreStoredSubscriptions(session);
     }
 
     @Override
@@ -47,6 +53,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         if (Objects.equals(req.getType(), SUBSCRIBE)) {
             log.info("subscribe request: {}", req.getSymbols());
             monitorService.subscribe(session, req);
+            marketSubscriptionService.subscribe(sessionUserId(session), req.getSymbols(), req.getInterval());
             req.getSymbols().forEach(symbol -> {
                 multiPlexManager.subscribeKline(symbol, req.getInterval());
                 multiPlexManager.subscribeKline(symbol, "1d");
@@ -54,6 +61,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
             });
         }
         if (Objects.equals(req.getType(), UNSUBSCRIBE)) {
+            marketSubscriptionService.unsubscribe(sessionUserId(session), req.getSymbols());
             monitorService.unsubscribe(session, req)
                     .forEach(multiPlexManager::unsubscribe);
         }
@@ -75,6 +83,27 @@ public class MultiPlexHandler extends TextWebSocketHandler {
             } catch (Exception e) {
                 e.printStackTrace();
             }
+        });
+    }
+
+    private Long sessionUserId(WebSocketSession session) {
+        Object userId = session.getAttributes().get(SessionUser.USER_ID);
+        return userId instanceof Long id ? id : null;
+    }
+
+    private void restoreStoredSubscriptions(WebSocketSession session) {
+        Long userId = sessionUserId(session);
+        if (userId == null) {
+            return;
+        }
+
+        marketSubscriptionService.list(userId).forEach(subscription -> {
+            String symbol = subscription.getSymbol();
+            String interval = subscription.getInterval();
+            monitorService.subscribe(session, new SymbolMonitorDto(SUBSCRIBE, java.util.List.of(symbol), interval));
+            multiPlexManager.subscribeKline(symbol, interval);
+            multiPlexManager.subscribeKline(symbol, "1d");
+            multiPlexManager.subscribeTicker(symbol);
         });
     }
 
