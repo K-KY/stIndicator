@@ -37,7 +37,7 @@ public class PositionMonitorRepositoryImpl implements PositionMonitorRepository 
 
     @Override
     public List<PositionMonitor> findAllByUserId(Long userId) {
-        return positionMonitorJpaRepository.findAllByUserId(userId)
+        return positionMonitorJpaRepository.findAllByUser_Id(userId)
                 .stream()
                 .map(PositionMonitorEntity::toDomain)
                 .toList();

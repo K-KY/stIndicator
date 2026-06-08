@@ -9,5 +9,5 @@ import java.util.List;
 public interface PositionMonitorJpaRepository extends JpaRepository<PositionMonitorEntity, Long> {
     List<PositionMonitorEntity> findAllByStatus(PositionMonitorStatus status);
 
-    List<PositionMonitorEntity> findAllByUserId(Long userId);
+    List<PositionMonitorEntity> findAllByUser_Id(Long userId);
 }
