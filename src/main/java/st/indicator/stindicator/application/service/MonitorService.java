@@ -7,7 +7,6 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import st.indicator.stindicator.infra.connector.repository.MonitorRepository;
 import st.indicator.stindicator.infra.ws.dto.binance.KlineEventDTO;
-import st.indicator.stindicator.presentation.ws.dto.MonitorSocketEventDto;
 import st.indicator.stindicator.presentation.dto.SymbolMonitorDto;
 import tools.jackson.databind.ObjectMapper;
 
@@ -181,35 +180,6 @@ public class MonitorService {
         sessionSendLocks.remove(session.getId());
 
         return releasedStreams;
-    }
-
-    public void publishMonitorEvent(String symbol, MonitorSocketEventDto event) {
-        Set<WebSocketSession> targetSessions = new HashSet<>();
-        Set<WebSocketSession> staleSessions = new HashSet<>();
-        String normalizedSymbol = symbol.toUpperCase();
-
-        streamSubscribers.forEach((streamKey, sessions) -> {
-            if (streamKey.startsWith(normalizedSymbol.toLowerCase() + "@kline_")) {
-                targetSessions.addAll(sessions);
-            }
-        });
-
-        if (targetSessions.isEmpty()) {
-            return;
-        }
-
-        targetSessions.forEach(session -> {
-            try {
-                if (!sendText(session, objectMapper.writeValueAsString(event), "monitor", symbol, false)) {
-                    staleSessions.add(session);
-                }
-            } catch (Exception e) {
-                logger.warn("monitor event send failed session={}, symbol={}", session.getId(), symbol, e);
-                staleSessions.add(session);
-            }
-        });
-
-        staleSessions.forEach(this::unsubscribe);
     }
 
     public boolean hasSubscribers(String symbol) {
