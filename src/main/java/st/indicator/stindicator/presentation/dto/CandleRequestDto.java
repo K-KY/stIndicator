@@ -7,7 +7,7 @@ import st.indicator.stindicator.application.dto.CandleCommand;
 public class CandleRequestDto {
     @Schema(description = "조회할 거래 심볼", example = "BTCUSDT")
     String symbol;
-    @Schema(description = "조회할 캔들 주기", example = "1h")
+    @Schema(description = "조회할 캔들 주기", example = "4h")
     String interval;
     @Schema(description = "조회할 캔들 개수", example = "150")
     String limit;
