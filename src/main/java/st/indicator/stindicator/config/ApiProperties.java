@@ -17,4 +17,8 @@ public class ApiProperties {
     public ExchangeClient getBinanceExchangeClient() {
         return new BinanceClient(apiKey, apiSecret, HttpClient.newHttpClient());
     }
+
+    public String getApiKey() {
+        return apiKey;
+    }
 }

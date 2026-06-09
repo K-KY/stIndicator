@@ -1,5 +1,7 @@
 package st.indicator.stindicator.application.dto;
 
+import st.indicator.stindicator.domain.entity.TriggerBasis;
+
 import java.math.BigDecimal;
 
 public class AtrOrderPreview {
@@ -41,13 +43,28 @@ public class AtrOrderPreview {
     private final BigDecimal possibleLoss;
     // 현재 구현 기준 예상 이익 금액
     private final BigDecimal possibleProfit;
+    // 손절 트리거 평가 기준
+    private final TriggerBasis stopTriggerBasis;
+    // 익절 트리거 평가 기준
+    private final TriggerBasis takeProfitTriggerBasis;
+    // 손절 가격까지 필요한 가격 변동률
+    private final BigDecimal priceMovePercentForStop;
+    // 익절 가격까지 필요한 가격 변동률
+    private final BigDecimal priceMovePercentForTakeProfit;
+    // 손절 시 필요 증거금 대비 손실률
+    private final BigDecimal marginPnlPercentForStop;
+    // 익절 시 필요 증거금 대비 수익률
+    private final BigDecimal marginPnlPercentForTakeProfit;
 
     public AtrOrderPreview(String symbol, String side, String interval, Integer atrPeriod,
                            BigDecimal availableBalance, BigDecimal entryPrice, BigDecimal atr,
                            BigDecimal atrMultiplier, BigDecimal stopDistance, BigDecimal riskPercent,
                            BigDecimal riskAmount, BigDecimal leverage, BigDecimal quantity,
                            BigDecimal notional, BigDecimal requiredMargin, BigDecimal stopPrice,
-                           BigDecimal targetPrice, BigDecimal possibleLoss, BigDecimal possibleProfit) {
+                           BigDecimal targetPrice, BigDecimal possibleLoss, BigDecimal possibleProfit,
+                           TriggerBasis stopTriggerBasis, TriggerBasis takeProfitTriggerBasis,
+                           BigDecimal priceMovePercentForStop, BigDecimal priceMovePercentForTakeProfit,
+                           BigDecimal marginPnlPercentForStop, BigDecimal marginPnlPercentForTakeProfit) {
         this.symbol = symbol;
         this.side = side;
         this.interval = interval;
@@ -67,6 +84,12 @@ public class AtrOrderPreview {
         this.targetPrice = targetPrice;
         this.possibleLoss = possibleLoss;
         this.possibleProfit = possibleProfit;
+        this.stopTriggerBasis = stopTriggerBasis;
+        this.takeProfitTriggerBasis = takeProfitTriggerBasis;
+        this.priceMovePercentForStop = priceMovePercentForStop;
+        this.priceMovePercentForTakeProfit = priceMovePercentForTakeProfit;
+        this.marginPnlPercentForStop = marginPnlPercentForStop;
+        this.marginPnlPercentForTakeProfit = marginPnlPercentForTakeProfit;
     }
 
     public String getSymbol() {
@@ -143,5 +166,29 @@ public class AtrOrderPreview {
 
     public BigDecimal getPossibleProfit() {
         return possibleProfit;
+    }
+
+    public TriggerBasis getStopTriggerBasis() {
+        return stopTriggerBasis;
+    }
+
+    public TriggerBasis getTakeProfitTriggerBasis() {
+        return takeProfitTriggerBasis;
+    }
+
+    public BigDecimal getPriceMovePercentForStop() {
+        return priceMovePercentForStop;
+    }
+
+    public BigDecimal getPriceMovePercentForTakeProfit() {
+        return priceMovePercentForTakeProfit;
+    }
+
+    public BigDecimal getMarginPnlPercentForStop() {
+        return marginPnlPercentForStop;
+    }
+
+    public BigDecimal getMarginPnlPercentForTakeProfit() {
+        return marginPnlPercentForTakeProfit;
     }
 }

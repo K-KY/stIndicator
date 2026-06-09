@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
+import st.indicator.stindicator.domain.entity.TriggerBasis;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -48,6 +49,14 @@ public class AtrPositionSizingService {
     public AtrOrderPreview preview(String symbol, String side, String interval, Integer atrPeriod,
                                    BigDecimal availableBalance, BigDecimal entryPrice, BigDecimal atr,
                                    BigDecimal riskPercent, BigDecimal atrMultiplier, BigDecimal leverage) {
+        return preview(symbol, side, interval, atrPeriod, availableBalance, entryPrice, atr, riskPercent,
+                atrMultiplier, leverage, TriggerBasis.PRICE_PERCENT, TriggerBasis.PRICE_PERCENT);
+    }
+
+    public AtrOrderPreview preview(String symbol, String side, String interval, Integer atrPeriod,
+                                   BigDecimal availableBalance, BigDecimal entryPrice, BigDecimal atr,
+                                   BigDecimal riskPercent, BigDecimal atrMultiplier, BigDecimal leverage,
+                                   TriggerBasis stopTriggerBasis, TriggerBasis takeProfitTriggerBasis) {
         log.info("flow buildAtrPreview start symbol={}, side={}, interval={}, atrPeriod={}, availableBalance={}, entryPrice={}, atr={}, riskPercent={}, atrMultiplier={}, leverage={}",
                 symbol, side, interval, atrPeriod, availableBalance, entryPrice, atr, riskPercent, atrMultiplier, leverage);
         BigDecimal normalizedRiskPercent = defaultIfNull(riskPercent, BigDecimal.ONE);
@@ -78,6 +87,21 @@ public class AtrPositionSizingService {
         boolean isLong = "BUY".equalsIgnoreCase(side);
         BigDecimal stopPrice = isLong ? entryPrice.subtract(stopDistance) : entryPrice.add(stopDistance);//청산
         BigDecimal targetPrice = isLong ? entryPrice.add(stopDistance) : entryPrice.subtract(stopDistance);//목표가
+        BigDecimal possibleLoss = riskAmount;
+        BigDecimal possibleProfit = riskAmount;
+
+        if (stopTriggerBasis == TriggerBasis.PNL_PERCENT) {
+            possibleLoss = requiredMargin.multiply(normalizedRiskPercent)
+                    .divide(BigDecimal.valueOf(100), SCALE, RoundingMode.HALF_UP);
+            BigDecimal priceMoveForLoss = possibleLoss.divide(quantity, SCALE, RoundingMode.HALF_UP);
+            stopPrice = isLong ? entryPrice.subtract(priceMoveForLoss) : entryPrice.add(priceMoveForLoss);
+        }
+        if (takeProfitTriggerBasis == TriggerBasis.PNL_PERCENT) {
+            possibleProfit = requiredMargin.multiply(normalizedRiskPercent)
+                    .divide(BigDecimal.valueOf(100), SCALE, RoundingMode.HALF_UP);
+            BigDecimal priceMoveForProfit = possibleProfit.divide(quantity, SCALE, RoundingMode.HALF_UP);
+            targetPrice = isLong ? entryPrice.add(priceMoveForProfit) : entryPrice.subtract(priceMoveForProfit);
+        }
 
         AtrOrderPreview preview = new AtrOrderPreview(
                 symbol,
@@ -97,8 +121,14 @@ public class AtrPositionSizingService {
                 requiredMargin,
                 stopPrice,
                 targetPrice,
-                riskAmount,
-                riskAmount
+                possibleLoss,
+                possibleProfit,
+                stopTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : stopTriggerBasis,
+                takeProfitTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : takeProfitTriggerBasis,
+                priceMovePercent(entryPrice, stopPrice),
+                priceMovePercent(entryPrice, targetPrice),
+                marginPnlPercent(possibleLoss, requiredMargin),
+                marginPnlPercent(possibleProfit, requiredMargin)
         );
         log.info("flow buildAtrPreview done symbol={}, quantity={}, requiredMargin={}, stopPrice={}, targetPrice={}",
                 preview.getSymbol(), preview.getQuantity(), preview.getRequiredMargin(),
@@ -116,5 +146,22 @@ public class AtrPositionSizingService {
 
     private BigDecimal defaultIfNull(BigDecimal value, BigDecimal fallback) {
         return value == null ? fallback : value;
+    }
+
+    private BigDecimal priceMovePercent(BigDecimal entryPrice, BigDecimal triggerPrice) {
+        if (entryPrice == null || triggerPrice == null || entryPrice.signum() == 0) {
+            return BigDecimal.ZERO;
+        }
+        return triggerPrice.subtract(entryPrice).abs()
+                .divide(entryPrice, SCALE, RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100));
+    }
+
+    private BigDecimal marginPnlPercent(BigDecimal amount, BigDecimal requiredMargin) {
+        if (amount == null || requiredMargin == null || requiredMargin.signum() == 0) {
+            return BigDecimal.ZERO;
+        }
+        return amount.divide(requiredMargin, SCALE, RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100));
     }
 }

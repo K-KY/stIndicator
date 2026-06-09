@@ -60,7 +60,7 @@ public class BinanceClient implements ClientService {
         try {
             Map<String, String> params = new LinkedHashMap<>();
             params.put("symbol", valueOrDefault(dto.getSymbol(), "BTCUSDT").toUpperCase(Locale.ROOT));
-            params.put("interval", valueOrDefault(dto.getInterval(), "1h"));
+            params.put("interval", valueOrDefault(dto.getInterval(), "4h"));
             params.put("limit", valueOrDefault(dto.getLimit(), "150"));
             List<Candle> candles = exchangeConnector.getCandles(
                     params
@@ -151,7 +151,9 @@ public class BinanceClient implements ClientService {
                 atr,
                 dto.getRiskPercent(),
                 dto.getAtrMultiplier(),
-                dto.getLeverage()
+                dto.getLeverage(),
+                dto.getStopTriggerBasis(),
+                dto.getTakeProfitTriggerBasis()
         );
         log.info("flow previewAtrOrder done symbol={}, atr={}, quantity={}, requiredMargin={}, stopPrice={}, targetPrice={}",
                 preview.getSymbol(), preview.getAtr(), preview.getQuantity(), preview.getRequiredMargin(),

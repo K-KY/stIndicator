@@ -2,6 +2,7 @@ package st.indicator.stindicator.presentation.dto;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import st.indicator.stindicator.application.dto.AtrOrderCommand;
+import st.indicator.stindicator.domain.entity.TriggerBasis;
 
 import java.math.BigDecimal;
 
@@ -11,7 +12,7 @@ public class AtrOrderRequestDto {
     private String symbol;
     @Schema(description = "주문 방향", example = "BUY")
     private String side;
-    @Schema(description = "ATR 계산에 사용할 캔들 주기", example = "1h")
+    @Schema(description = "ATR 계산에 사용할 캔들 주기", example = "4h")
     private String interval;
     @Schema(description = "ATR 계산용 캔들 조회 개수", example = "150")
     private String limit;
@@ -29,6 +30,10 @@ public class AtrOrderRequestDto {
     private String timeInForce;
     @Schema(description = "사용자가 직접 지정한 진입 가격", example = "60000")
     private BigDecimal entryPrice;
+    @Schema(description = "손절 트리거 기준", example = "PRICE_PERCENT")
+    private TriggerBasis stopTriggerBasis;
+    @Schema(description = "익절 트리거 기준", example = "PRICE_PERCENT")
+    private TriggerBasis takeProfitTriggerBasis;
 
     public AtrOrderRequestDto() {
     }
@@ -94,6 +99,14 @@ public class AtrOrderRequestDto {
         return entryPrice;
     }
 
+    public TriggerBasis getStopTriggerBasis() {
+        return stopTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : stopTriggerBasis;
+    }
+
+    public TriggerBasis getTakeProfitTriggerBasis() {
+        return takeProfitTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : takeProfitTriggerBasis;
+    }
+
 
     public void setSymbol(String symbol) {
         this.symbol = symbol;
@@ -139,11 +152,19 @@ public class AtrOrderRequestDto {
         this.entryPrice = entryPrice;
     }
 
+    public void setStopTriggerBasis(TriggerBasis stopTriggerBasis) {
+        this.stopTriggerBasis = stopTriggerBasis;
+    }
+
+    public void setTakeProfitTriggerBasis(TriggerBasis takeProfitTriggerBasis) {
+        this.takeProfitTriggerBasis = takeProfitTriggerBasis;
+    }
+
     public AtrOrderCommand toCommand() {
         return new AtrOrderCommand(
                 symbol,
                 side,
-                interval == null ? "1h" : interval,
+                interval == null ? "4h" : interval,
                 limit == null ? "150" : limit,
                 atrPeriod == null ? 14 : atrPeriod,
                 riskPercent == null ? BigDecimal.ONE : riskPercent,
@@ -151,7 +172,9 @@ public class AtrOrderRequestDto {
                 leverage == null ? BigDecimal.ONE : leverage,
                 type == null ? "MARKET" : type,
                 timeInForce,
-                entryPrice
+                entryPrice,
+                getStopTriggerBasis(),
+                getTakeProfitTriggerBasis()
         );
     }
 }
