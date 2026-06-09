@@ -1,5 +1,7 @@
 package st.indicator.stindicator.application.dto;
 
+import st.indicator.stindicator.domain.entity.TriggerBasis;
+
 import java.math.BigDecimal;
 
 public class AtrOrderCommand {
@@ -25,11 +27,24 @@ public class AtrOrderCommand {
     private final String timeInForce;
     // 직접 지정한 진입 가격. 없으면 현재가 기준 계산
     private final BigDecimal entryPrice;
+    // 손절 조건을 가격 변동률로 볼지 투입 마진 손익률로 볼지 나타낸다
+    private final TriggerBasis stopTriggerBasis;
+    // 익절 조건을 가격 변동률로 볼지 투입 마진 손익률로 볼지 나타낸다
+    private final TriggerBasis takeProfitTriggerBasis;
 
     public AtrOrderCommand(String symbol, String side, String interval, String limit,
                            Integer atrPeriod, BigDecimal riskPercent, BigDecimal atrMultiplier,
                            BigDecimal leverage, String type, String timeInForce,
                            BigDecimal entryPrice) {
+        this(symbol, side, interval, limit, atrPeriod, riskPercent, atrMultiplier, leverage,
+                type, timeInForce, entryPrice, TriggerBasis.PRICE_PERCENT, TriggerBasis.PRICE_PERCENT);
+    }
+
+    public AtrOrderCommand(String symbol, String side, String interval, String limit,
+                           Integer atrPeriod, BigDecimal riskPercent, BigDecimal atrMultiplier,
+                           BigDecimal leverage, String type, String timeInForce,
+                           BigDecimal entryPrice, TriggerBasis stopTriggerBasis,
+                           TriggerBasis takeProfitTriggerBasis) {
         this.symbol = symbol;
         this.side = side;
         this.interval = interval;
@@ -41,6 +56,8 @@ public class AtrOrderCommand {
         this.type = type;
         this.timeInForce = timeInForce;
         this.entryPrice = entryPrice;
+        this.stopTriggerBasis = stopTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : stopTriggerBasis;
+        this.takeProfitTriggerBasis = takeProfitTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : takeProfitTriggerBasis;
     }
 
     public String getSymbol() {
@@ -85,5 +102,13 @@ public class AtrOrderCommand {
 
     public BigDecimal getEntryPrice() {
         return entryPrice;
+    }
+
+    public TriggerBasis getStopTriggerBasis() {
+        return stopTriggerBasis;
+    }
+
+    public TriggerBasis getTakeProfitTriggerBasis() {
+        return takeProfitTriggerBasis;
     }
 }
