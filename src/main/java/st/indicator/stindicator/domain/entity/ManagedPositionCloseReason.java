@@ -1,0 +1,11 @@
+package st.indicator.stindicator.domain.entity;
+
+public enum ManagedPositionCloseReason {
+    STOP_PRICE_REACHED,
+    POSSIBLE_LOSS_REACHED,
+    TARGET_PRICE_REACHED,
+    POSSIBLE_PROFIT_REACHED,
+    RAISING_STOP_REACHED,
+    MANUAL_CLOSE,
+    EXTERNAL_POSITION_CLOSED
+}
