@@ -42,6 +42,12 @@ public class ManagedPositionEntity {
     private BigDecimal leverage;
     @Column(precision = 38, scale = 18)
     private BigDecimal requiredMargin;
+    @Column(precision = 38, scale = 18)
+    private BigDecimal atr;
+    @Column(precision = 38, scale = 18)
+    private BigDecimal atrMultiplier;
+    @Column(precision = 38, scale = 18)
+    private BigDecimal riskPercent;
     @Enumerated(EnumType.STRING)
     private TriggerBasis stopTriggerBasis;
     @Enumerated(EnumType.STRING)
@@ -65,6 +71,8 @@ public class ManagedPositionEntity {
     @Column(precision = 38, scale = 18)
     private BigDecimal currentPrice;
     @Column(precision = 38, scale = 18)
+    private BigDecimal closePrice;
+    @Column(precision = 38, scale = 18)
     private BigDecimal realizedPnl;
     @Column(precision = 38, scale = 18)
     private BigDecimal unrealizedPnl;
@@ -72,6 +80,8 @@ public class ManagedPositionEntity {
     private ManagedPositionStatus status;
     @Enumerated(EnumType.STRING)
     private ManagedPositionCloseReason closeReason;
+    @Lob
+    private String managementEvents;
     private LocalDateTime openedAt;
     private LocalDateTime closedAt;
     private LocalDateTime updatedAt;
@@ -93,6 +103,9 @@ public class ManagedPositionEntity {
         entity.possibleLoss = pending.getPossibleLoss();
         entity.leverage = pending.getLeverage();
         entity.requiredMargin = pending.getRequiredMargin();
+        entity.atr = pending.getAtr();
+        entity.atrMultiplier = pending.getAtrMultiplier();
+        entity.riskPercent = pending.getRiskPercent();
         entity.stopTriggerBasis = pending.getStopTriggerBasis();
         entity.mode = pending.getMode();
         if (entity.mode == ManagedOrderMode.RAISING_STOP_ONLY) {
@@ -118,7 +131,22 @@ public class ManagedPositionEntity {
         entity.status = ManagedPositionStatus.ACTIVE;
         entity.openedAt = LocalDateTime.now();
         entity.updatedAt = entity.openedAt;
+        entity.appendEvent("ENTRY_FILLED symbol=" + entity.symbol + ", entryOrderId=" + entity.entryOrderId
+                + ", entryPrice=" + entity.entryPrice + ", quantity=" + entity.quantity);
+        entity.appendEvent("MONITORING_STARTED mode=" + entity.getMode()
+                + ", stopBasis=" + entity.getStopTriggerBasis()
+                + ", raiseTriggerType=" + entity.raiseTriggerType
+                + ", raiseTriggerValue=" + entity.raiseTriggerValue
+                + ", raiseStopType=" + entity.raiseStopType
+                + ", raiseStopValue=" + entity.raiseStopValue);
         return entity;
+    }
+
+    public void appendEvent(String message) {
+        String event = LocalDateTime.now() + " " + message;
+        this.managementEvents = this.managementEvents == null || this.managementEvents.isBlank()
+                ? event
+                : this.managementEvents + "\n" + event;
     }
 
     public void updateMarket(BigDecimal currentPrice, BigDecimal unrealizedPnl,
@@ -171,18 +199,27 @@ public class ManagedPositionEntity {
         this.status = ManagedPositionStatus.CLOSING;
         this.closeOrderId = closeOrderId;
         this.closeReason = reason;
+        appendEvent("CLOSE_ORDER_SENT reason=" + reason + ", closeOrderId=" + closeOrderId);
         this.updatedAt = LocalDateTime.now();
     }
 
     public void markClosed(BigDecimal realizedPnl) {
+        markClosed(realizedPnl, currentPrice);
+    }
+
+    public void markClosed(BigDecimal realizedPnl, BigDecimal closePrice) {
         this.status = ManagedPositionStatus.CLOSED;
         this.realizedPnl = realizedPnl == null ? this.unrealizedPnl : realizedPnl;
+        this.closePrice = closePrice == null ? this.currentPrice : closePrice;
         this.closedAt = LocalDateTime.now();
+        appendEvent("CLOSE_FILLED closePrice=" + this.closePrice + ", realizedPnl=" + this.realizedPnl
+                + ", reason=" + this.closeReason);
         this.updatedAt = this.closedAt;
     }
 
     public void markFailed() {
         this.status = ManagedPositionStatus.FAILED;
+        appendEvent("ERROR status=FAILED, reason=" + this.closeReason);
         this.updatedAt = LocalDateTime.now();
     }
 
@@ -202,6 +239,9 @@ public class ManagedPositionEntity {
     public BigDecimal getPossibleProfit() { return possibleProfit; }
     public BigDecimal getLeverage() { return leverage; }
     public BigDecimal getRequiredMargin() { return requiredMargin; }
+    public BigDecimal getAtr() { return atr; }
+    public BigDecimal getAtrMultiplier() { return atrMultiplier; }
+    public BigDecimal getRiskPercent() { return riskPercent; }
     public TriggerBasis getStopTriggerBasis() { return stopTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : stopTriggerBasis; }
     public TriggerBasis getTakeProfitTriggerBasis() {
         if (getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
@@ -219,10 +259,12 @@ public class ManagedPositionEntity {
     public BigDecimal getHighestPrice() { return highestPrice; }
     public BigDecimal getLowestPrice() { return lowestPrice; }
     public BigDecimal getCurrentPrice() { return currentPrice; }
+    public BigDecimal getClosePrice() { return closePrice; }
     public BigDecimal getRealizedPnl() { return realizedPnl; }
     public BigDecimal getUnrealizedPnl() { return unrealizedPnl; }
     public ManagedPositionStatus getStatus() { return status; }
     public ManagedPositionCloseReason getCloseReason() { return closeReason; }
+    public String getManagementEvents() { return managementEvents; }
     public LocalDateTime getOpenedAt() { return openedAt; }
     public LocalDateTime getClosedAt() { return closedAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

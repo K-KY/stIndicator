@@ -10,11 +10,14 @@ import st.indicator.stindicator.application.dto.AtrOrderCommand;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.domain.entity.*;
 import st.indicator.stindicator.infra.connector.entity.ManagedPositionEntity;
+import st.indicator.stindicator.infra.connector.entity.ManagedPositionJournalEntity;
 import st.indicator.stindicator.infra.connector.entity.PendingOrderEntity;
 import st.indicator.stindicator.infra.connector.repository.ManagedPositionJpaRepository;
+import st.indicator.stindicator.infra.connector.repository.ManagedPositionJournalJpaRepository;
 import st.indicator.stindicator.infra.connector.repository.PendingOrderJpaRepository;
 import st.indicator.stindicator.infra.ws.MultiPlexManager;
 import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
+import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 import st.indicator.stindicator.presentation.ws.publisher.OrderTradeUpdateEvent;
 import st.indicator.stindicator.presentation.ws.publisher.PriceTickEvent;
@@ -35,18 +38,22 @@ public class ManagedTradeService {
     private final ExchangeConnector exchangeConnector;
     private final PendingOrderJpaRepository pendingOrderRepository;
     private final ManagedPositionJpaRepository managedPositionRepository;
+    private final ManagedPositionJournalJpaRepository managedPositionJournalRepository;
     private final MultiPlexManager multiPlexManager;
     private final Set<Long> closingPositionIds = ConcurrentHashMap.newKeySet();
+    private final Map<String, ManagedOrderSymbolRule> orderRuleCache = new ConcurrentHashMap<>();
 
     public ManagedTradeService(ClientService clientService,
                                ExchangeConnector exchangeConnector,
                                PendingOrderJpaRepository pendingOrderRepository,
                                ManagedPositionJpaRepository managedPositionRepository,
+                               ManagedPositionJournalJpaRepository managedPositionJournalRepository,
                                MultiPlexManager multiPlexManager) {
         this.clientService = clientService;
         this.exchangeConnector = exchangeConnector;
         this.pendingOrderRepository = pendingOrderRepository;
         this.managedPositionRepository = managedPositionRepository;
+        this.managedPositionJournalRepository = managedPositionJournalRepository;
         this.multiPlexManager = multiPlexManager;
     }
 
@@ -334,9 +341,73 @@ public class ManagedTradeService {
         return managedPositionRepository.findAllByStatusOrderByOpenedAtDesc(ManagedPositionStatus.ACTIVE);
     }
 
+    public List<ManagedPositionEntity> positionHistory(String symbol, String side, ManagedOrderMode mode,
+                                                       ManagedPositionCloseReason closeReason) {
+        return managedPositionRepository.findAllByStatusInOrderByClosedAtDesc(
+                        List.of(ManagedPositionStatus.CLOSED, ManagedPositionStatus.FAILED))
+                .stream()
+                .filter(position -> symbol == null || symbol.isBlank() || position.getSymbol().equalsIgnoreCase(symbol))
+                .filter(position -> side == null || side.isBlank() || position.getEntrySide().equalsIgnoreCase(side)
+                        || ("LONG".equalsIgnoreCase(side) && "BUY".equalsIgnoreCase(position.getEntrySide()))
+                        || ("SHORT".equalsIgnoreCase(side) && "SELL".equalsIgnoreCase(position.getEntrySide())))
+                .filter(position -> mode == null || position.getMode() == mode)
+                .filter(position -> closeReason == null || position.getCloseReason() == closeReason)
+                .toList();
+    }
+
     public ManagedPositionEntity position(Long id) {
         return managedPositionRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("관리 포지션을 찾을 수 없습니다: " + id));
+    }
+
+    @Transactional(readOnly = true)
+    public List<ManagedPositionJournalEntity> journals(String symbol) {
+        if (symbol == null || symbol.isBlank()) {
+            return managedPositionJournalRepository.findAllByOrderByUpdatedAtDesc();
+        }
+        return managedPositionJournalRepository.findAllByManagedPosition_SymbolIgnoreCaseOrderByUpdatedAtDesc(symbol);
+    }
+
+    @Transactional(readOnly = true)
+    public ManagedPositionJournalEntity journal(Long positionId) {
+        return managedPositionJournalRepository.findByManagedPosition_Id(positionId)
+                .orElseThrow(() -> new IllegalArgumentException("매매일지를 찾을 수 없습니다: " + positionId));
+    }
+
+    @Transactional
+    public ManagedPositionJournalEntity upsertJournal(Long positionId, Long userId,
+                                                      ManagedPositionJournalRequestDto request) {
+        ManagedPositionEntity position = position(positionId);
+        if (position.getStatus() == ManagedPositionStatus.ACTIVE || position.getStatus() == ManagedPositionStatus.CLOSING) {
+            throw new IllegalArgumentException("종료된 포지션에만 매매일지를 작성할 수 있습니다.");
+        }
+        ManagedPositionJournalEntity journal = managedPositionJournalRepository.findByManagedPosition_Id(positionId)
+                .orElseGet(() -> ManagedPositionJournalEntity.create(
+                        position,
+                        userId,
+                        request.getTitle(),
+                        request.getEntryReason(),
+                        request.getContent(),
+                        request.getReview(),
+                        request.getTags()
+                ));
+        journal.update(
+                request.getTitle(),
+                request.getEntryReason(),
+                request.getContent(),
+                request.getReview(),
+                request.getTags()
+        );
+        ManagedPositionJournalEntity saved = managedPositionJournalRepository.save(journal);
+        position.appendEvent("JOURNAL_SAVED journalId=" + saved.getId());
+        managedPositionRepository.save(position);
+        return saved;
+    }
+
+    @Transactional
+    public void deleteJournal(Long positionId) {
+        managedPositionJournalRepository.findByManagedPosition_Id(positionId)
+                .ifPresent(managedPositionJournalRepository::delete);
     }
 
     @Transactional
@@ -399,10 +470,11 @@ public class ManagedTradeService {
         if (position.getStatus() != ManagedPositionStatus.CLOSING || !event.isFilled()) {
             return;
         }
-        BigDecimal realized = calculatePnl(position, event.averagePrice().signum() == 0
+        BigDecimal closePrice = event.averagePrice().signum() == 0
                 ? position.getCurrentPrice()
-                : event.averagePrice());
-        position.markClosed(realized);
+                : event.averagePrice();
+        BigDecimal realized = calculatePnl(position, closePrice);
+        position.markClosed(realized, closePrice);
         closingPositionIds.remove(position.getId());
         managedPositionRepository.save(position);
         log.info("managed position closed id={}, reason={}, realizedPnl={}",
@@ -428,7 +500,7 @@ public class ManagedTradeService {
             log.debug("raising stop inspect id={}, symbol={}, mode={}, initialStop={}, currentStop={}, price={}, pnl={}, raiseActivated={}",
                     position.getId(), position.getSymbol(), position.getMode(), position.getInitialStopPrice(),
                     position.getCurrentStopPrice(), currentPrice, pnl, raiseActivated);
-            if (!raiseActivated && pnl.signum() > 0) {
+            if (!raiseActivated && shouldActivateRaisingStop(position, currentPrice, pnl)) {
                 raiseActivated = true;
             }
             if (raiseActivated && position.isRaiseStopEnabled()) {
@@ -447,13 +519,56 @@ public class ManagedTradeService {
             log.info("managed stop changed id={}, symbol={}, mode={}, initialStop={}, previousStop={}, nextStop={}, price={}, pnl={}",
                     position.getId(), position.getSymbol(), position.getMode(), position.getInitialStopPrice(),
                     position.getCurrentStopPrice(), nextStop, currentPrice, pnl);
+            position.appendEvent("STOP_CHANGED previousStop=" + position.getCurrentStopPrice()
+                    + ", nextStop=" + nextStop + ", price=" + currentPrice + ", pnl=" + pnl);
         }
 
         position.updateMarket(currentPrice, pnl, highest, lowest, nextStop, raiseActivated);
         managedPositionRepository.save(position);
         if (reason != null) {
+            position.appendEvent("CLOSE_CONDITION_REACHED reason=" + reason + ", price=" + currentPrice
+                    + ", stop=" + nextStop + ", pnl=" + pnl);
+            log.info("managed close triggered id={}, symbol={}, mode={}, reason={}, entryPrice={}, currentPrice={}, currentStop={}, pnl={}, raiseActivated={}, stopBasis={}, raiseTriggerType={}, raiseTriggerValue={}, raiseStopType={}, raiseStopValue={}",
+                    position.getId(), position.getSymbol(), position.getMode(), reason, position.getEntryPrice(),
+                    currentPrice, nextStop, pnl, raiseActivated, position.getStopTriggerBasis(),
+                    position.getRaiseTriggerType(), position.getRaiseTriggerValue(),
+                    position.getRaiseStopType(), position.getRaiseStopValue());
             closePosition(position, reason);
         }
+    }
+
+    private boolean shouldActivateRaisingStop(ManagedPositionEntity position, BigDecimal currentPrice, BigDecimal currentPnl) {
+        BigDecimal triggerValue = valueOrZero(position.getRaiseTriggerValue());
+        if (triggerValue.signum() <= 0) {
+            return currentPnl.signum() > 0;
+        }
+        RaiseStopType triggerType = position.getRaiseTriggerType() == null ? RaiseStopType.PERCENT : position.getRaiseTriggerType();
+        if (position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT) {
+            if (triggerType == RaiseStopType.AMOUNT) {
+                return currentPnl.compareTo(triggerValue) >= 0;
+            }
+            if (position.getRequiredMargin() == null || position.getRequiredMargin().signum() <= 0) {
+                return false;
+            }
+            BigDecimal pnlPercent = currentPnl
+                    .divide(position.getRequiredMargin(), 10, RoundingMode.HALF_UP)
+                    .multiply(new BigDecimal("100"));
+            return pnlPercent.compareTo(triggerValue) >= 0;
+        }
+
+        BigDecimal favorableMove = isLong(position)
+                ? currentPrice.subtract(position.getEntryPrice())
+                : position.getEntryPrice().subtract(currentPrice);
+        if (favorableMove.signum() <= 0) {
+            return false;
+        }
+        if (triggerType == RaiseStopType.AMOUNT) {
+            return favorableMove.compareTo(triggerValue) >= 0;
+        }
+        BigDecimal priceMovePercent = favorableMove
+                .divide(position.getEntryPrice(), 10, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal("100"));
+        return priceMovePercent.compareTo(triggerValue) >= 0;
     }
 
     private ManagedPositionCloseReason fixedCloseReason(ManagedPositionEntity position, BigDecimal price, BigDecimal pnl) {
@@ -511,7 +626,8 @@ public class ManagedTradeService {
             Order order = exchangeConnector.order(closeCurrentPriceParams(position));
             position.markClosing(order.getOrderId(), reason);
             if ("FILLED".equalsIgnoreCase(order.getStatus())) {
-                position.markClosed(calculatePnl(position, fillPrice(order, position.getCurrentPrice())));
+                BigDecimal closePrice = fillPrice(order, position.getCurrentPrice());
+                position.markClosed(calculatePnl(position, closePrice), closePrice);
                 closingPositionIds.remove(position.getId());
             }
             managedPositionRepository.save(position);
@@ -524,16 +640,72 @@ public class ManagedTradeService {
     }
 
     private Map<String, String> closeCurrentPriceParams(ManagedPositionEntity position) {
+        ManagedOrderSymbolRule orderRule = orderRule(position.getSymbol());
+        String quantity = adjustCloseQuantity(position.getSymbol(), position.getQuantity(), orderRule);
+        String price = adjustClosePrice(position.getSymbol(), position.getCurrentPrice(), orderRule);
         Map<String, String> params = new LinkedHashMap<>();
         params.put("symbol", position.getSymbol());
         params.put("side", position.getCloseSide());
         params.put("type", "LIMIT");
         params.put("timeInForce", "GTC");
-        params.put("quantity", position.getQuantity().toPlainString());
-        params.put("price", position.getCurrentPrice().toPlainString());
+        params.put("quantity", quantity);
+        params.put("price", price);
         params.put("reduceOnly", "true");
         params.put("timestamp", String.valueOf(System.currentTimeMillis()));
         return params;
+    }
+
+    private ManagedOrderSymbolRule orderRule(String symbol) {
+        String normalizedSymbol = requireText(symbol, "관리형 청산 심볼은 필수입니다.").toUpperCase(Locale.ROOT);
+        return orderRuleCache.computeIfAbsent(normalizedSymbol, this::loadOrderRule);
+    }
+
+    private ManagedOrderSymbolRule loadOrderRule(String symbol) {
+        return clientService.getExchangeSymbols().stream()
+                .filter(exchangeSymbol -> exchangeSymbol.getSymbol().equalsIgnoreCase(symbol))
+                .findFirst()
+                .map(exchangeSymbol -> new ManagedOrderSymbolRule(
+                        exchangeSymbol.getQuantityStepSize(),
+                        exchangeSymbol.getMinQuantity(),
+                        exchangeSymbol.getPriceTickSize()
+                ))
+                .orElse(ManagedOrderSymbolRule.empty());
+    }
+
+    private String adjustCloseQuantity(String symbol, BigDecimal quantity, ManagedOrderSymbolRule orderRule) {
+        BigDecimal value = valueOrZero(quantity);
+        BigDecimal adjusted = floorToStep(value, orderRule.quantityStepSize());
+        if (orderRule.minQuantity() != null && adjusted.compareTo(orderRule.minQuantity()) < 0) {
+            throw new IllegalArgumentException("관리형 청산 수량이 최소 수량보다 작습니다. symbol=" + symbol
+                    + ", quantity=" + adjusted.toPlainString()
+                    + ", minQuantity=" + orderRule.minQuantity().toPlainString());
+        }
+        if (adjusted.compareTo(value) != 0) {
+            log.info("managed close quantity adjusted symbol={}, original={}, adjusted={}, stepSize={}",
+                    symbol, value.toPlainString(), adjusted.toPlainString(), orderRule.quantityStepSize());
+        }
+        return plain(adjusted);
+    }
+
+    private String adjustClosePrice(String symbol, BigDecimal price, ManagedOrderSymbolRule orderRule) {
+        BigDecimal value = valueOrZero(price);
+        BigDecimal adjusted = floorToStep(value, orderRule.priceTickSize());
+        if (adjusted.compareTo(value) != 0) {
+            log.info("managed close price adjusted symbol={}, original={}, adjusted={}, tickSize={}",
+                    symbol, value.toPlainString(), adjusted.toPlainString(), orderRule.priceTickSize());
+        }
+        return plain(adjusted);
+    }
+
+    private BigDecimal floorToStep(BigDecimal value, BigDecimal step) {
+        if (step == null || step.signum() <= 0) {
+            return value;
+        }
+        return value.divide(step, 0, RoundingMode.DOWN).multiply(step);
+    }
+
+    private String plain(BigDecimal value) {
+        return value.stripTrailingZeros().toPlainString();
     }
 
     private BigDecimal nextRaisedStop(ManagedPositionEntity position, BigDecimal currentPrice, BigDecimal currentPnl) {
@@ -649,8 +821,21 @@ public class ManagedTradeService {
         return value == null || value.isBlank() ? defaultValue : value;
     }
 
+    private String requireText(String value, String message) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(message);
+        }
+        return value;
+    }
+
     private record ExitPlan(BigDecimal stopPrice, BigDecimal targetPrice,
                             BigDecimal possibleLoss, BigDecimal possibleProfit,
                             TriggerBasis stopTriggerBasis, TriggerBasis takeProfitTriggerBasis) {
+    }
+
+    private record ManagedOrderSymbolRule(BigDecimal quantityStepSize, BigDecimal minQuantity, BigDecimal priceTickSize) {
+        static ManagedOrderSymbolRule empty() {
+            return new ManagedOrderSymbolRule(null, null, null);
+        }
     }
 }
