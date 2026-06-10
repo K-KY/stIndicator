@@ -162,30 +162,6 @@ public class BinanceClient implements ClientService {
     }
 
     @Override
-    public Order orderByAtr(AtrOrderCommand dto) {
-        log.info("flow orderByAtr start symbol={}, side={}, type={}, leverage={}",
-                dto.getSymbol(), dto.getSide(), dto.getType(), dto.getLeverage());
-        AtrOrderPreview preview = previewAtrOrder(dto);
-        String type = resolveAtrOrderType(dto);
-        String timeInForce = "LIMIT".equals(type)
-                ? valueOrDefault(dto.getTimeInForce(), "GTC").toUpperCase(Locale.ROOT)
-                : null;
-        String price = "LIMIT".equals(type) ? preview.getEntryPrice().toPlainString() : null;
-        Order order = placeOrder(
-                dto.getSymbol(),
-                dto.getSide(),
-                type,
-                timeInForce,
-                preview.getQuantity().toPlainString(),
-                price,
-                false
-        );
-        log.info("flow orderByAtr done symbol={}, orderId={}, quantity={}",
-                order.getSymbol(), order.getOrderId(), preview.getQuantity());
-        return order;
-    }
-
-    @Override
     public void getOrders() {
 
     }
@@ -292,15 +268,6 @@ public class BinanceClient implements ClientService {
         log.info("flow placeOrder done symbol={}, orderId={}, status={}, executedQty={}",
                 order.getSymbol(), order.getOrderId(), order.getStatus(), order.getExecutedQty());
         return order;
-    }
-
-    private String resolveAtrOrderType(AtrOrderCommand dto) {
-        if (dto.getEntryPrice() != null) {
-            return "LIMIT";
-        }
-        return dto.getType() == null || dto.getType().isBlank()
-                ? "MARKET"
-                : dto.getType().toUpperCase(Locale.ROOT);
     }
 
     private Order normalizeOrder(Order order, String symbol, String side, String type, String timeInForce,
