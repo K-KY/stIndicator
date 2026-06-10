@@ -30,6 +30,13 @@ public class OrderRepositoryImpl implements OrderRepository {
     }
 
     @Override
+    public List<UserOrder> getOrders(Long userId, String symbol) {
+        return orderRepository.findAllByUser_IdAndSymbolOrderByCreatedAtDesc(userId, symbol).stream()
+                .map(UserOrderEntity::toDomain)
+                .toList();
+    }
+
+    @Override
     public void cancelOrder(String orderId) {
         orderRepository.findById(orderId).ifPresent(entity -> {
             entity.updateStatus("CANCELED");

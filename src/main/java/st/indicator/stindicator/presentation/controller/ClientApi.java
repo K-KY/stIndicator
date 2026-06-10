@@ -105,7 +105,8 @@ public interface ClientApi {
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "주문 이력 조회 성공")
     })
-    List<UserOrder> getOrders(@RequestParam @Parameter(description = "조회할 심볼", example = "BTCUSDT") String symbol);
+    List<UserOrder> getOrders(@RequestParam @Parameter(description = "조회할 심볼", example = "BTCUSDT") String symbol,
+                              @Parameter(hidden = true) HttpSession session);
 
     @GetMapping("/order/details")
     @Operation(summary = "주문 상세 조회", description = "거래소에 저장된 단일 주문의 최신 상세 상태를 조회한다.")

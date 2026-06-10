@@ -1,11 +1,13 @@
 package st.indicator.stindicator.application.service;
 
 import jakarta.annotation.PostConstruct;
+import org.springframework.http.HttpStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 import st.indicator.stindicator.application.dto.AtrOrderCommand;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.domain.entity.*;
@@ -87,7 +89,7 @@ public class ManagedTradeService {
     }
 
     @Transactional
-    public PendingOrderEntity createAtrLimitOrder(ManagedAtrOrderRequestDto request) {
+    public PendingOrderEntity createAtrLimitOrder(Long userId, ManagedAtrOrderRequestDto request) {
         validateCreateRequest(request);
         AtrOrderCommand command = new AtrOrderCommand(
                 request.getSymbol(),
@@ -114,7 +116,7 @@ public class ManagedTradeService {
                 preview.getEntryPrice().toPlainString()
         ));
         PendingOrderEntity pending = PendingOrderEntity.create(
-                null,
+                userId,
                 preview.getSymbol(),
                 normalizeSide(preview.getSide()),
                 order.getOrderId(),
@@ -148,25 +150,26 @@ public class ManagedTradeService {
     }
 
     @Transactional
-    public List<PendingOrderEntity> pendingOrders() {
-        List<PendingOrderEntity> pendingOrders = pendingOrderRepository.findAllByStatusOrderByCreatedAtDesc(PendingOrderStatus.PENDING);
+    public List<PendingOrderEntity> pendingOrders(Long userId) {
+        List<PendingOrderEntity> pendingOrders = pendingOrderRepository.findAllByUserIdAndStatusOrderByCreatedAtDesc(userId, PendingOrderStatus.PENDING);
         pendingOrders.forEach(this::repairPendingSizingIfNeeded);
         pendingOrders.forEach(this::normalizePendingPolicyIfNeeded);
         return pendingOrders;
     }
 
     @Transactional
-    public PendingOrderEntity pendingOrder(Long id) {
+    public PendingOrderEntity pendingOrder(Long userId, Long id) {
         PendingOrderEntity pending = pendingOrderRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("대기 주문을 찾을 수 없습니다: " + id));
+        assertOwner(pending.getUserId(), userId);
         pending = repairPendingSizingIfNeeded(pending);
         normalizePendingPolicyIfNeeded(pending);
         return pending;
     }
 
     @Transactional
-    public PendingOrderEntity cancelPendingOrder(Long id) {
-        PendingOrderEntity pending = pendingOrder(id);
+    public PendingOrderEntity cancelPendingOrder(Long userId, Long id) {
+        PendingOrderEntity pending = pendingOrder(userId, id);
         if (pending.getStatus() != PendingOrderStatus.PENDING) {
             return pending;
         }
@@ -176,8 +179,8 @@ public class ManagedTradeService {
     }
 
     @Transactional
-    public PendingOrderEntity updatePendingConditions(Long id, UpdatePendingOrderConditionsRequestDto request) {
-        PendingOrderEntity pending = pendingOrder(id);
+    public PendingOrderEntity updatePendingConditions(Long userId, Long id, UpdatePendingOrderConditionsRequestDto request) {
+        PendingOrderEntity pending = pendingOrder(userId, id);
         if (pending.getStatus() != PendingOrderStatus.PENDING) {
             throw new IllegalArgumentException("대기중인 주문만 조건을 수정할 수 있습니다.");
         }
@@ -337,13 +340,13 @@ public class ManagedTradeService {
         return value != null && value.signum() > 0;
     }
 
-    public List<ManagedPositionEntity> activePositions() {
-        return managedPositionRepository.findAllByStatusOrderByOpenedAtDesc(ManagedPositionStatus.ACTIVE);
+    public List<ManagedPositionEntity> activePositions(Long userId) {
+        return managedPositionRepository.findAllByUserIdAndStatusOrderByOpenedAtDesc(userId, ManagedPositionStatus.ACTIVE);
     }
 
-    public List<ManagedPositionEntity> positionHistory(String symbol, String side, ManagedOrderMode mode,
+    public List<ManagedPositionEntity> positionHistory(Long userId, String symbol, String side, ManagedOrderMode mode,
                                                        ManagedPositionCloseReason closeReason) {
-        return managedPositionRepository.findAllByStatusInOrderByClosedAtDesc(
+        return managedPositionRepository.findAllByUserIdAndStatusInOrderByClosedAtDesc(userId,
                         List.of(ManagedPositionStatus.CLOSED, ManagedPositionStatus.FAILED))
                 .stream()
                 .filter(position -> symbol == null || symbol.isBlank() || position.getSymbol().equalsIgnoreCase(symbol))
@@ -360,24 +363,30 @@ public class ManagedTradeService {
                 .orElseThrow(() -> new IllegalArgumentException("관리 포지션을 찾을 수 없습니다: " + id));
     }
 
-    @Transactional(readOnly = true)
-    public List<ManagedPositionJournalEntity> journals(String symbol) {
-        if (symbol == null || symbol.isBlank()) {
-            return managedPositionJournalRepository.findAllByOrderByUpdatedAtDesc();
-        }
-        return managedPositionJournalRepository.findAllByManagedPosition_SymbolIgnoreCaseOrderByUpdatedAtDesc(symbol);
+    public ManagedPositionEntity position(Long userId, Long id) {
+        ManagedPositionEntity position = position(id);
+        assertOwner(position.getUserId(), userId);
+        return position;
     }
 
     @Transactional(readOnly = true)
-    public ManagedPositionJournalEntity journal(Long positionId) {
-        return managedPositionJournalRepository.findByManagedPosition_Id(positionId)
+    public List<ManagedPositionJournalEntity> journals(Long userId, String symbol) {
+        if (symbol == null || symbol.isBlank()) {
+            return managedPositionJournalRepository.findAllByManagedPosition_UserIdOrderByUpdatedAtDesc(userId);
+        }
+        return managedPositionJournalRepository.findAllByManagedPosition_UserIdAndManagedPosition_SymbolIgnoreCaseOrderByUpdatedAtDesc(userId, symbol);
+    }
+
+    @Transactional(readOnly = true)
+    public ManagedPositionJournalEntity journal(Long userId, Long positionId) {
+        return managedPositionJournalRepository.findByManagedPosition_IdAndManagedPosition_UserId(positionId, userId)
                 .orElseThrow(() -> new IllegalArgumentException("매매일지를 찾을 수 없습니다: " + positionId));
     }
 
     @Transactional
     public ManagedPositionJournalEntity upsertJournal(Long positionId, Long userId,
                                                       ManagedPositionJournalRequestDto request) {
-        ManagedPositionEntity position = position(positionId);
+        ManagedPositionEntity position = position(userId, positionId);
         if (position.getStatus() == ManagedPositionStatus.ACTIVE || position.getStatus() == ManagedPositionStatus.CLOSING) {
             throw new IllegalArgumentException("종료된 포지션에만 매매일지를 작성할 수 있습니다.");
         }
@@ -405,16 +414,22 @@ public class ManagedTradeService {
     }
 
     @Transactional
-    public void deleteJournal(Long positionId) {
-        managedPositionJournalRepository.findByManagedPosition_Id(positionId)
+    public void deleteJournal(Long userId, Long positionId) {
+        managedPositionJournalRepository.findByManagedPosition_IdAndManagedPosition_UserId(positionId, userId)
                 .ifPresent(managedPositionJournalRepository::delete);
     }
 
     @Transactional
-    public ManagedPositionEntity closePosition(Long id) {
-        ManagedPositionEntity position = position(id);
+    public ManagedPositionEntity closePosition(Long userId, Long id) {
+        ManagedPositionEntity position = position(userId, id);
         closePosition(position, ManagedPositionCloseReason.MANUAL_CLOSE);
         return position(position.getId());
+    }
+
+    private void assertOwner(Long ownerUserId, Long sessionUserId) {
+        if (ownerUserId == null || sessionUserId == null || !ownerUserId.equals(sessionUserId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "요청한 사용자의 데이터가 아닙니다.");
+        }
     }
 
     @EventListener

@@ -4,7 +4,9 @@ import com.java.candle.Candle;
 import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.application.service.ClientService;
 import st.indicator.stindicator.application.service.OrderService;
@@ -139,8 +141,9 @@ public class ClientController implements ClientApi {
     public Order order(OrderRequestDto dto, HttpSession session) {
         log.info("request order symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}",
                 dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(), dto.getQuantity(), dto.getPrice());
+        Long userId = requireSessionUserId(session);
         Order order = clientService.order(dto.toCommand());
-        orderService.save(sessionUserId(session), order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
+        orderService.save(userId, order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
                 order.getTimeInForce(), toPlainString(order.getOrigQty()), toPlainString(order.getPrice()), order.getStatus());// 사용자 주문 저장
         return order;
     }
@@ -150,9 +153,9 @@ public class ClientController implements ClientApi {
      * 거래소 원본 주문 조회와 달리, 우리 서비스가 저장한 주문 목록을 확인하는 용도다.
      */
     @Override
-    public List<UserOrder> getOrders(String symbol /*특정 사용자,  미체결, 체결 필터 추가 되어야함,*/) {
+    public List<UserOrder> getOrders(String symbol, HttpSession session) {
         log.info("request getOrders symbol={}", symbol);
-        return orderService.getOrders(symbol);
+        return orderService.getOrders(requireSessionUserId(session), symbol);
     }
 
     /**
@@ -180,5 +183,13 @@ public class ClientController implements ClientApi {
     private Long sessionUserId(HttpSession session) {
         Object userId = session == null ? null : session.getAttribute(SessionUser.USER_ID);
         return userId instanceof Long id ? id : null;
+    }
+
+    private Long requireSessionUserId(HttpSession session) {
+        Long userId = sessionUserId(session);
+        if (userId == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "로그인이 필요합니다.");
+        }
+        return userId;
     }
 }

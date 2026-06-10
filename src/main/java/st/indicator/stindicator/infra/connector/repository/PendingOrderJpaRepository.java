@@ -10,4 +10,5 @@ import java.util.Optional;
 public interface PendingOrderJpaRepository extends JpaRepository<PendingOrderEntity, Long> {
     Optional<PendingOrderEntity> findFirstByOrderId(String orderId);
     List<PendingOrderEntity> findAllByStatusOrderByCreatedAtDesc(PendingOrderStatus status);
+    List<PendingOrderEntity> findAllByUserIdAndStatusOrderByCreatedAtDesc(Long userId, PendingOrderStatus status);
 }
