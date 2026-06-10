@@ -1,9 +1,15 @@
 package st.indicator.stindicator.presentation.controller;
 
+import jakarta.servlet.http.HttpSession;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import st.indicator.stindicator.application.service.ManagedTradeService;
+import st.indicator.stindicator.application.service.SessionUser;
+import st.indicator.stindicator.domain.entity.ManagedOrderMode;
+import st.indicator.stindicator.domain.entity.ManagedPositionCloseReason;
 import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
+import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
+import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
@@ -54,12 +60,56 @@ public class ManagedTradeController implements ManagedTradeApi {
     }
 
     @Override
+    public List<ManagedPositionResponseDto> positionHistory(String symbol, String side, ManagedOrderMode mode,
+                                                            ManagedPositionCloseReason closeReason) {
+        return managedTradeService.positionHistory(symbol, side, mode, closeReason).stream()
+                .map(ManagedPositionResponseDto::from)
+                .toList();
+    }
+
+    @Override
+    public List<ManagedPositionJournalResponseDto> journals(String symbol) {
+        return managedTradeService.journals(symbol).stream()
+                .map(ManagedPositionJournalResponseDto::from)
+                .toList();
+    }
+
+    @Override
     public ManagedPositionResponseDto position(Long id) {
         return ManagedPositionResponseDto.from(managedTradeService.position(id));
     }
 
     @Override
+    public ManagedPositionJournalResponseDto journal(Long id) {
+        return ManagedPositionJournalResponseDto.from(managedTradeService.journal(id));
+    }
+
+    @Override
+    public ManagedPositionJournalResponseDto upsertJournal(Long id, ManagedPositionJournalRequestDto request,
+                                                           HttpSession session) {
+        return ManagedPositionJournalResponseDto.from(
+                managedTradeService.upsertJournal(id, sessionUserId(session), request)
+        );
+    }
+
+    @Override
+    public void deleteJournal(Long id) {
+        managedTradeService.deleteJournal(id);
+    }
+
+    @Override
     public ManagedPositionResponseDto closePosition(Long id) {
         return ManagedPositionResponseDto.from(managedTradeService.closePosition(id));
+    }
+
+    private Long sessionUserId(HttpSession session) {
+        Object userId = session == null ? null : session.getAttribute(SessionUser.USER_ID);
+        if (userId instanceof Long id) {
+            return id;
+        }
+        if (userId instanceof Number number) {
+            return number.longValue();
+        }
+        return null;
     }
 }

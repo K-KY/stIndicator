@@ -10,5 +10,6 @@ import java.util.Optional;
 public interface ManagedPositionJpaRepository extends JpaRepository<ManagedPositionEntity, Long> {
     Optional<ManagedPositionEntity> findFirstByCloseOrderId(String closeOrderId);
     List<ManagedPositionEntity> findAllByStatusOrderByOpenedAtDesc(ManagedPositionStatus status);
+    List<ManagedPositionEntity> findAllByStatusInOrderByClosedAtDesc(List<ManagedPositionStatus> statuses);
     List<ManagedPositionEntity> findAllBySymbolAndStatus(String symbol, ManagedPositionStatus status);
 }

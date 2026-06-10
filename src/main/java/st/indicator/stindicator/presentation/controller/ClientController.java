@@ -117,28 +117,6 @@ public class ClientController implements ClientApi {
         return clientService.previewAtrOrder(dto.toCommand());
     }
 
-    //테스트용 메서드
-    public Order orderByAtr(AtrOrderRequestDto dto) {
-        return orderByAtr(dto, null);
-    }
-
-    /**
-     * ATR 기준으로 계산한 수량으로 실제 Binance 주문을 실행한다.
-     * 미리보기 로직을 먼저 수행한 뒤 계산된 quantity를 사용해 주문하고, 결과는 사용자 주문 이력에도 저장한다.
-     */
-    @Override
-    public Order orderByAtr(AtrOrderRequestDto dto, HttpSession session) {
-        log.info("request orderByAtr symbol={}, side={}, interval={}, limit={}, atrPeriod={}, riskPercent={}, atrMultiplier={}, leverage={}, type={}, timeInForce={}, entryPrice={}",
-                dto.getSymbol(), dto.getSide(), dto.getInterval(), dto.getLimit(), dto.getAtrPeriod(),
-                dto.getRiskPercent(), dto.getAtrMultiplier(), dto.getLeverage(), dto.getType(),
-                dto.getTimeInForce(), dto.getEntryPrice());
-        Order order = clientService.orderByAtr(dto.toCommand());
-        Long userId = sessionUserId(session);
-        orderService.save(userId, order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
-                order.getTimeInForce(), toPlainString(order.getOrigQty()), toPlainString(order.getPrice()), order.getStatus());
-        return order;
-    }
-
     /**
      * 현재 보유 중인 특정 심볼 포지션을 시장가 reduceOnly 주문으로 청산한다.
      * 롱 포지션이면 SELL, 숏 포지션이면 BUY 방향으로 반대 주문을 만들어 종료한다.
