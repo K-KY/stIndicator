@@ -1,8 +1,10 @@
 package st.indicator.stindicator.presentation.controller;
 
 import jakarta.servlet.http.HttpSession;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 import st.indicator.stindicator.application.service.ManagedTradeService;
 import st.indicator.stindicator.application.service.SessionUser;
 import st.indicator.stindicator.domain.entity.ManagedOrderMode;
@@ -26,83 +28,85 @@ public class ManagedTradeController implements ManagedTradeApi {
     }
 
     @Override
-    public PendingOrderResponseDto createAtrOrder(ManagedAtrOrderRequestDto request) {
-        return PendingOrderResponseDto.from(managedTradeService.createAtrLimitOrder(request));
+    public PendingOrderResponseDto createAtrOrder(ManagedAtrOrderRequestDto request, HttpSession session) {
+        return PendingOrderResponseDto.from(managedTradeService.createAtrLimitOrder(requireSessionUserId(session), request));
     }
 
     @Override
-    public List<PendingOrderResponseDto> pendingOrders() {
-        return managedTradeService.pendingOrders().stream()
+    public List<PendingOrderResponseDto> pendingOrders(HttpSession session) {
+        return managedTradeService.pendingOrders(requireSessionUserId(session)).stream()
                 .map(PendingOrderResponseDto::from)
                 .toList();
     }
 
     @Override
-    public PendingOrderResponseDto pendingOrder(Long id) {
-        return PendingOrderResponseDto.from(managedTradeService.pendingOrder(id));
+    public PendingOrderResponseDto pendingOrder(Long id, HttpSession session) {
+        return PendingOrderResponseDto.from(managedTradeService.pendingOrder(requireSessionUserId(session), id));
     }
 
     @Override
-    public PendingOrderResponseDto cancelPendingOrder(Long id) {
-        return PendingOrderResponseDto.from(managedTradeService.cancelPendingOrder(id));
+    public PendingOrderResponseDto cancelPendingOrder(Long id, HttpSession session) {
+        return PendingOrderResponseDto.from(managedTradeService.cancelPendingOrder(requireSessionUserId(session), id));
     }
 
     @Override
-    public PendingOrderResponseDto updatePendingConditions(Long id, UpdatePendingOrderConditionsRequestDto request) {
-        return PendingOrderResponseDto.from(managedTradeService.updatePendingConditions(id, request));
+    public PendingOrderResponseDto updatePendingConditions(Long id, UpdatePendingOrderConditionsRequestDto request,
+                                                           HttpSession session) {
+        return PendingOrderResponseDto.from(managedTradeService.updatePendingConditions(requireSessionUserId(session), id, request));
     }
 
     @Override
-    public List<ManagedPositionResponseDto> positions() {
-        return managedTradeService.activePositions().stream()
+    public List<ManagedPositionResponseDto> positions(HttpSession session) {
+        return managedTradeService.activePositions(requireSessionUserId(session)).stream()
                 .map(ManagedPositionResponseDto::from)
                 .toList();
     }
 
     @Override
     public List<ManagedPositionResponseDto> positionHistory(String symbol, String side, ManagedOrderMode mode,
-                                                            ManagedPositionCloseReason closeReason) {
-        return managedTradeService.positionHistory(symbol, side, mode, closeReason).stream()
+                                                            ManagedPositionCloseReason closeReason,
+                                                            HttpSession session) {
+        return managedTradeService.positionHistory(requireSessionUserId(session), symbol, side, mode, closeReason).stream()
                 .map(ManagedPositionResponseDto::from)
                 .toList();
     }
 
     @Override
-    public List<ManagedPositionJournalResponseDto> journals(String symbol) {
-        return managedTradeService.journals(symbol).stream()
+    public List<ManagedPositionJournalResponseDto> journals(String symbol, HttpSession session) {
+        return managedTradeService.journals(requireSessionUserId(session), symbol).stream()
                 .map(ManagedPositionJournalResponseDto::from)
                 .toList();
     }
 
     @Override
-    public ManagedPositionResponseDto position(Long id) {
-        return ManagedPositionResponseDto.from(managedTradeService.position(id));
+    public ManagedPositionResponseDto position(Long id, HttpSession session) {
+        return ManagedPositionResponseDto.from(managedTradeService.position(requireSessionUserId(session), id));
     }
 
     @Override
-    public ManagedPositionJournalResponseDto journal(Long id) {
-        return ManagedPositionJournalResponseDto.from(managedTradeService.journal(id));
+    public ManagedPositionJournalResponseDto journal(Long id, HttpSession session) {
+        return ManagedPositionJournalResponseDto.from(managedTradeService.journal(requireSessionUserId(session), id));
     }
 
     @Override
     public ManagedPositionJournalResponseDto upsertJournal(Long id, ManagedPositionJournalRequestDto request,
                                                            HttpSession session) {
         return ManagedPositionJournalResponseDto.from(
-                managedTradeService.upsertJournal(id, sessionUserId(session), request)
+                managedTradeService.upsertJournal(id, requireSessionUserId(session), request)
         );
     }
 
     @Override
-    public void deleteJournal(Long id) {
-        managedTradeService.deleteJournal(id);
+    public void deleteJournal(Long id, HttpSession session) {
+        managedTradeService.deleteJournal(requireSessionUserId(session), id);
     }
 
     @Override
-    public ManagedPositionResponseDto closePosition(Long id) {
-        return ManagedPositionResponseDto.from(managedTradeService.closePosition(id));
+    public ManagedPositionResponseDto closePosition(Long id, HttpSession session) {
+        return ManagedPositionResponseDto.from(managedTradeService.closePosition(requireSessionUserId(session), id));
     }
 
-    private Long sessionUserId(HttpSession session) {
+    private Long requireSessionUserId(HttpSession session) {
         Object userId = session == null ? null : session.getAttribute(SessionUser.USER_ID);
         if (userId instanceof Long id) {
             return id;
@@ -110,6 +114,6 @@ public class ManagedTradeController implements ManagedTradeApi {
         if (userId instanceof Number number) {
             return number.longValue();
         }
-        return null;
+        throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "로그인이 필요합니다.");
     }
 }

@@ -8,6 +8,9 @@ import java.util.Optional;
 
 public interface ManagedPositionJournalJpaRepository extends JpaRepository<ManagedPositionJournalEntity, Long> {
     Optional<ManagedPositionJournalEntity> findByManagedPosition_Id(Long managedPositionId);
+    Optional<ManagedPositionJournalEntity> findByManagedPosition_IdAndManagedPosition_UserId(Long managedPositionId, Long userId);
     List<ManagedPositionJournalEntity> findAllByOrderByUpdatedAtDesc();
+    List<ManagedPositionJournalEntity> findAllByManagedPosition_UserIdOrderByUpdatedAtDesc(Long userId);
     List<ManagedPositionJournalEntity> findAllByManagedPosition_SymbolIgnoreCaseOrderByUpdatedAtDesc(String symbol);
+    List<ManagedPositionJournalEntity> findAllByManagedPosition_UserIdAndManagedPosition_SymbolIgnoreCaseOrderByUpdatedAtDesc(Long userId, String symbol);
 }

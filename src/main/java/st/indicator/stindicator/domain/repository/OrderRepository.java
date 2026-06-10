@@ -7,5 +7,6 @@ import java.util.List;
 public interface OrderRepository {
     void saveOrder(UserOrder userOrder);
     List<UserOrder> getOrders(String symbol);
+    List<UserOrder> getOrders(Long userId, String symbol);
     void cancelOrder(String orderId);//주문취소
 }

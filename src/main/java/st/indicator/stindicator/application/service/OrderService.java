@@ -76,6 +76,10 @@ public class OrderService {
         return orderRepository.getOrders(symbol);
     }
 
+    public List<UserOrder> getOrders(Long userId, String symbol) {
+        return orderRepository.getOrders(userId, symbol);
+    }
+
     public Order cancelOrder(String symbol, String orderId) {
         Order order = requireClientService().cancelOrder(symbol, orderId);
         orderRepository.cancelOrder(orderId);
