@@ -86,13 +86,6 @@ public interface ClientApi {
     })
     AtrOrderPreview previewAtrOrder(@ParameterObject AtrOrderRequestDto dto);
 
-    @PostMapping("/atr/order")
-    @Operation(summary = "ATR 기준 주문 실행", description = "ATR 기준으로 계산한 수량으로 실제 Binance 주문을 실행한다.")
-    @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "ATR 주문 실행 성공")
-    })
-    Order orderByAtr(@ParameterObject AtrOrderRequestDto dto, @Parameter(hidden = true) HttpSession session);
-
     @PostMapping("/positions/liquidate")
     @Operation(summary = "포지션 시장가 청산", description = "현재 보유 중인 특정 심볼 포지션을 시장가 reduceOnly 주문으로 청산한다.")
     @ApiResponses({

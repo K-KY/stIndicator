@@ -23,7 +23,6 @@ public interface ClientService {
     BigDecimal getAtr(CandleCommand dto);
     Order order(OrderCommand dto);
     AtrOrderPreview previewAtrOrder(AtrOrderCommand dto);
-    Order orderByAtr(AtrOrderCommand dto);
     List<AssetBalance> getAssets();
     List<ExchangeSymbol> getExchangeSymbols();
     SymbolPrice getPrice(String symbol);
