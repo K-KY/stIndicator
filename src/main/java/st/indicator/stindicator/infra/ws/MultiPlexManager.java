@@ -304,9 +304,16 @@ public class MultiPlexManager {
             return;
         }
 
+        JsonNode node;
+        try {
+            node = objectMapper.readTree(trimmed);
+        } catch (Exception e) {
+            log.warn("multiplex message parse failed payload={}", trimmed, e);
+            return;
+        }
+
         try {
             lastMessageAt.set(Instant.now());
-            JsonNode node = objectMapper.readTree(trimmed);
             JsonNode payload = node.has("data") ? node.get("data") : node;
             String payloadJson = objectMapper.writeValueAsString(payload);
 
@@ -338,7 +345,7 @@ public class MultiPlexManager {
                 monitorEventPublisher.publishPriceTick(dto.getSymbol(), dto.getMarkPrice(), dto.getEventTime());
             }
         } catch (Exception e) {
-            log.warn("multiplex message parse failed payload={}", trimmed, e);
+            log.warn("multiplex message handling failed payload={}", trimmed, e);
         }
     }
 }
