@@ -1,11 +1,11 @@
 package st.indicator.stindicator.application.service;
 
-import com.java.candle.Candle;
 import st.indicator.stindicator.domain.entity.AssetBalance;
 import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
 import st.indicator.stindicator.domain.entity.PositionRisk;
 import st.indicator.stindicator.domain.entity.SymbolPrice;
+import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.io.IOException;
 import java.math.BigDecimal;

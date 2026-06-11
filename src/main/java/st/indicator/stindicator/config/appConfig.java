@@ -1,8 +1,8 @@
 package st.indicator.stindicator.config;
 
-import com.java.client.ExchangeClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import st.indicator.stindicator.domain.utils.client.ExchangeClient;
 
 @Configuration
 public class appConfig {

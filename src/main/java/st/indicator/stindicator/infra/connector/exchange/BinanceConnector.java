@@ -1,8 +1,5 @@
 package st.indicator.stindicator.infra.connector.exchange;
 
-import com.java.candle.Candle;
-import com.java.candle.CandleMapper;
-import com.java.client.ExchangeClient;
 import org.springframework.stereotype.Component;
 import st.indicator.stindicator.application.service.ExchangeConnector;
 import st.indicator.stindicator.domain.entity.AssetBalance;
@@ -10,6 +7,9 @@ import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
 import st.indicator.stindicator.domain.entity.PositionRisk;
 import st.indicator.stindicator.domain.entity.SymbolPrice;
+import st.indicator.stindicator.domain.utils.candle.Candle;
+import st.indicator.stindicator.domain.utils.candle.CandleMapper;
+import st.indicator.stindicator.domain.utils.client.ExchangeClient;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -79,7 +79,7 @@ public class BinanceConnector implements ExchangeConnector {
                 continue;
             }
             assets.add(new AssetBalance(
-                    assetNode.get("asset").asText(),
+                    assetNode.get("asset").asString(),
                     walletBalance,
                     availableBalance,
                     unrealizedProfit
@@ -100,13 +100,13 @@ public class BinanceConnector implements ExchangeConnector {
                 continue;
             }
             positions.add(new PositionRisk(
-                    positionNode.get("symbol").asText(),
+                    positionNode.get("symbol").asString(),
                     positionAmt,
                     decimal(positionNode, "entryPrice"),
                     decimal(positionNode, "markPrice"),
                     decimal(positionNode, "unRealizedProfit"),
                     decimal(positionNode, "leverage"),
-                    positionNode.get("positionSide").asText()
+                    positionNode.get("positionSide").asString()
             ));
         }
         return positions;
@@ -120,17 +120,17 @@ public class BinanceConnector implements ExchangeConnector {
         JsonNode symbolsNode = requiredNode(root, "symbols", "exchange info");
         List<ExchangeSymbol> symbols = new ArrayList<>();
         for (JsonNode symbolNode : symbolsNode) {
-            if (!"TRADING".equalsIgnoreCase(symbolNode.get("status").asText())) {
+            if (!"TRADING".equalsIgnoreCase(symbolNode.get("status").asString())) {
                 continue;
             }
             BigDecimal quantityStepSize = filterDecimal(symbolNode, "LOT_SIZE", "stepSize");
             BigDecimal minQuantity = filterDecimal(symbolNode, "LOT_SIZE", "minQty");
             BigDecimal priceTickSize = filterDecimal(symbolNode, "PRICE_FILTER", "tickSize");
             symbols.add(new ExchangeSymbol(
-                    symbolNode.get("symbol").asText(),
-                    symbolNode.get("baseAsset").asText(),
-                    symbolNode.get("quoteAsset").asText(),
-                    symbolNode.get("status").asText(),
+                    symbolNode.get("symbol").asString(),
+                    symbolNode.get("baseAsset").asString(),
+                    symbolNode.get("quoteAsset").asString(),
+                    symbolNode.get("status").asString(),
                     quantityStepSize,
                     minQuantity,
                     priceTickSize
@@ -153,8 +153,8 @@ public class BinanceConnector implements ExchangeConnector {
             String order = exchangeClient.post(ORDER_PATH, params);
             JsonNode response = objectMapper.readTree(order);
             if (response.has("code") && response.has("msg")) {
-                throw new IllegalStateException("Binance order failed code=" + response.get("code").asText()
-                        + ", msg=" + response.get("msg").asText());
+                throw new IllegalStateException("Binance order failed code=" + response.get("code").asString()
+                        + ", msg=" + response.get("msg").asString());
             }
             return objectMapper.readValue(order, Order.class);
         } catch (NoSuchAlgorithmException e) {
@@ -207,7 +207,7 @@ public class BinanceConnector implements ExchangeConnector {
         if (valueNode == null || valueNode.isNull()) {
             return BigDecimal.ZERO;
         }
-        return new BigDecimal(valueNode.asText());
+        return new BigDecimal(valueNode.asString());
     }
 
     private JsonNode readSuccessTree(String response, String operation) throws IOException {
@@ -223,7 +223,7 @@ public class BinanceConnector implements ExchangeConnector {
     private void throwIfBinanceError(JsonNode root, String operation) {
         if (root != null && root.has("code") && root.has("msg")) {
             throw new IllegalStateException("Binance " + operation + " failed code="
-                    + root.get("code").asText() + ", msg=" + root.get("msg").asText());
+                    + root.get("code").asString() + ", msg=" + root.get("msg").asString());
         }
     }
 
@@ -236,11 +236,11 @@ public class BinanceConnector implements ExchangeConnector {
     }
 
     private BigDecimal requiredDecimal(JsonNode node, String fieldName, String operation) {
-        return new BigDecimal(requiredNode(node, fieldName, operation).asText());
+        return new BigDecimal(requiredNode(node, fieldName, operation).asString());
     }
 
     private String requiredText(JsonNode node, String fieldName, String operation) {
-        return requiredNode(node, fieldName, operation).asText();
+        return requiredNode(node, fieldName, operation).asString();
     }
 
     private BigDecimal filterDecimal(JsonNode symbolNode, String filterType, String fieldName) {
@@ -250,9 +250,9 @@ public class BinanceConnector implements ExchangeConnector {
         }
         for (JsonNode filter : filters) {
             JsonNode type = filter.get("filterType");
-            if (type != null && filterType.equalsIgnoreCase(type.asText())) {
+            if (type != null && filterType.equalsIgnoreCase(type.asString())) {
                 JsonNode value = filter.get(fieldName);
-                return value == null || value.isNull() ? null : new BigDecimal(value.asText());
+                return value == null || value.isNull() ? null : new BigDecimal(value.asString());
             }
         }
         return null;

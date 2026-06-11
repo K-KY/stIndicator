@@ -1,6 +1,5 @@
 package st.indicator.stindicator.application.service;
 
-import com.java.candle.Candle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -15,6 +14,7 @@ import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
 import st.indicator.stindicator.domain.entity.PositionRisk;
 import st.indicator.stindicator.domain.entity.SymbolPrice;
+import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.io.IOException;
 import java.math.BigDecimal;

@@ -1,11 +1,11 @@
 package st.indicator.stindicator.application.service;
 
-import com.java.candle.Candle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.domain.entity.TriggerBasis;
+import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;

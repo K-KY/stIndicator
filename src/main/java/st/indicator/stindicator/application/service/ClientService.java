@@ -1,6 +1,5 @@
 package st.indicator.stindicator.application.service;
 
-import com.java.candle.Candle;
 import st.indicator.stindicator.application.dto.CandleCommand;
 import st.indicator.stindicator.application.dto.AtrOrderCommand;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
@@ -10,6 +9,7 @@ import st.indicator.stindicator.domain.entity.ExchangeSymbol;
 import st.indicator.stindicator.domain.entity.Order;
 import st.indicator.stindicator.domain.entity.PositionRisk;
 import st.indicator.stindicator.domain.entity.SymbolPrice;
+import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.math.BigDecimal;
 import java.util.List;

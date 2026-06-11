@@ -1,9 +1,9 @@
 package st.indicator.stindicator.config;
 
-import com.java.client.BinanceClient;
-import com.java.client.ExchangeClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import st.indicator.stindicator.domain.utils.client.BinanceClient;
+import st.indicator.stindicator.domain.utils.client.ExchangeClient;
 
 import java.net.http.HttpClient;
 

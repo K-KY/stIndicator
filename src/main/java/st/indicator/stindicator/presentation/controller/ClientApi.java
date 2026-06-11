@@ -1,6 +1,5 @@
 package st.indicator.stindicator.presentation.controller;
 
-import com.java.candle.Candle;
 import jakarta.servlet.http.HttpSession;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -22,6 +21,7 @@ import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.presentation.dto.AtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.CandleRequestDto;
 import st.indicator.stindicator.presentation.dto.OrderRequestDto;
+import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.math.BigDecimal;
 import java.util.List;
