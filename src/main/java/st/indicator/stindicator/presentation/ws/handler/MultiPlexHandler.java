@@ -54,6 +54,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
         sessions.add(session);
+        monitorService.registerSession(session);
         restoreStoredSubscriptions(session);
     }
 
@@ -92,6 +93,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         log.info("disconnect session: {}", session.getId());
         sessions.remove(session); // 세션 제거
+        monitorService.unregisterSession(session);
         monitorService.unsubscribe(session)
                 .forEach(this::releaseUpstreamWhenUnused);
     }

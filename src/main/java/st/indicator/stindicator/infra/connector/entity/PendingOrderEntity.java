@@ -5,6 +5,7 @@ import st.indicator.stindicator.domain.entity.ManagedOrderMode;
 import st.indicator.stindicator.domain.entity.PendingOrderStatus;
 import st.indicator.stindicator.domain.entity.RaiseStopType;
 import st.indicator.stindicator.domain.entity.TriggerBasis;
+import st.indicator.stindicator.domain.entity.TradeExecutionMode;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -59,6 +60,8 @@ public class PendingOrderEntity {
     @Column(precision = 38, scale = 8)
     private BigDecimal raiseStopValue;
     @Enumerated(EnumType.STRING)
+    private TradeExecutionMode executionMode;
+    @Enumerated(EnumType.STRING)
     private PendingOrderStatus status;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -74,7 +77,8 @@ public class PendingOrderEntity {
                                             BigDecimal atr, BigDecimal atrMultiplier, BigDecimal riskPercent,
                                             ManagedOrderMode mode, boolean raiseStopEnabled,
                                             RaiseStopType raiseTriggerType, BigDecimal raiseTriggerValue,
-                                            RaiseStopType raiseStopType, BigDecimal raiseStopValue) {
+                                            RaiseStopType raiseStopType, BigDecimal raiseStopValue,
+                                            TradeExecutionMode executionMode) {
         PendingOrderEntity entity = new PendingOrderEntity();
         entity.userId = userId;
         entity.symbol = symbol;
@@ -106,6 +110,7 @@ public class PendingOrderEntity {
         entity.raiseTriggerValue = raiseTriggerValue;
         entity.raiseStopType = raiseStopType;
         entity.raiseStopValue = raiseStopValue;
+        entity.executionMode = executionMode == null ? TradeExecutionMode.REAL : executionMode;
         entity.status = PendingOrderStatus.PENDING;
         entity.createdAt = LocalDateTime.now();
         entity.updatedAt = entity.createdAt;
@@ -189,6 +194,10 @@ public class PendingOrderEntity {
     public BigDecimal getRaiseTriggerValue() { return raiseTriggerValue; }
     public RaiseStopType getRaiseStopType() { return raiseStopType; }
     public BigDecimal getRaiseStopValue() { return raiseStopValue; }
+    public TradeExecutionMode getExecutionMode() {
+        return executionMode == null ? TradeExecutionMode.REAL : executionMode;
+    }
+    public boolean isTestOrder() { return getExecutionMode() == TradeExecutionMode.TEST; }
     public PendingOrderStatus getStatus() { return status; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

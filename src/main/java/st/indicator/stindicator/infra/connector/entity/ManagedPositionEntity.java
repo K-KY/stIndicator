@@ -6,6 +6,7 @@ import st.indicator.stindicator.domain.entity.ManagedPositionCloseReason;
 import st.indicator.stindicator.domain.entity.ManagedPositionStatus;
 import st.indicator.stindicator.domain.entity.RaiseStopType;
 import st.indicator.stindicator.domain.entity.TriggerBasis;
+import st.indicator.stindicator.domain.entity.TradeExecutionMode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -63,6 +64,8 @@ public class ManagedPositionEntity {
     private RaiseStopType raiseStopType;
     @Column(precision = 38, scale = 18)
     private BigDecimal raiseStopValue;
+    @Enumerated(EnumType.STRING)
+    private TradeExecutionMode executionMode;
     private boolean raiseActivated;
     @Column(precision = 38, scale = 18)
     private BigDecimal highestPrice;
@@ -89,7 +92,7 @@ public class ManagedPositionEntity {
     public ManagedPositionEntity() {
     }
 
-    public static ManagedPositionEntity from(PendingOrderEntity pending, BigDecimal fillPrice) {
+    public static ManagedPositionEntity from(PendingOrderEntity pending, BigDecimal fillPrice, BigDecimal executedQuantity) {
         ManagedPositionEntity entity = new ManagedPositionEntity();
         entity.userId = pending.getUserId();
         entity.symbol = pending.getSymbol();
@@ -97,26 +100,18 @@ public class ManagedPositionEntity {
         entity.closeSide = "BUY".equalsIgnoreCase(pending.getSide()) ? "SELL" : "BUY";
         entity.entryOrderId = pending.getOrderId();
         entity.entryPrice = fillPrice == null || fillPrice.signum() == 0 ? pending.getEntryPrice() : fillPrice;
-        entity.quantity = pending.getQuantity();
-        entity.initialStopPrice = pending.getStopPrice();
-        entity.currentStopPrice = pending.getStopPrice();
-        entity.possibleLoss = pending.getPossibleLoss();
+        entity.quantity = executedQuantity == null || executedQuantity.signum() <= 0
+                ? pending.getQuantity()
+                : executedQuantity;
         entity.leverage = pending.getLeverage();
-        entity.requiredMargin = pending.getRequiredMargin();
+        entity.requiredMargin = calculateRequiredMargin(entity.entryPrice, entity.quantity, entity.leverage);
         entity.atr = pending.getAtr();
         entity.atrMultiplier = pending.getAtrMultiplier();
         entity.riskPercent = pending.getRiskPercent();
         entity.stopTriggerBasis = pending.getStopTriggerBasis();
         entity.mode = pending.getMode();
-        if (entity.mode == ManagedOrderMode.RAISING_STOP_ONLY) {
-            entity.targetPrice = null;
-            entity.possibleProfit = null;
-            entity.takeProfitTriggerBasis = null;
-        } else {
-            entity.targetPrice = pending.getTargetPrice();
-            entity.possibleProfit = pending.getPossibleProfit();
-            entity.takeProfitTriggerBasis = pending.getTakeProfitTriggerBasis();
-        }
+        entity.executionMode = pending.getExecutionMode();
+        entity.applyActualFillExitPlan(pending);
         entity.raiseStopEnabled = pending.isRaiseStopEnabled();
         entity.raiseTriggerType = pending.getRaiseTriggerType();
         entity.raiseTriggerValue = pending.getRaiseTriggerValue();
@@ -134,12 +129,60 @@ public class ManagedPositionEntity {
         entity.appendEvent("ENTRY_FILLED symbol=" + entity.symbol + ", entryOrderId=" + entity.entryOrderId
                 + ", entryPrice=" + entity.entryPrice + ", quantity=" + entity.quantity);
         entity.appendEvent("MONITORING_STARTED mode=" + entity.getMode()
+                + ", executionMode=" + entity.getExecutionMode()
                 + ", stopBasis=" + entity.getStopTriggerBasis()
                 + ", raiseTriggerType=" + entity.raiseTriggerType
                 + ", raiseTriggerValue=" + entity.raiseTriggerValue
                 + ", raiseStopType=" + entity.raiseStopType
                 + ", raiseStopValue=" + entity.raiseStopValue);
         return entity;
+    }
+
+    private void applyActualFillExitPlan(PendingOrderEntity pending) {
+        boolean longSide = "BUY".equalsIgnoreCase(entrySide);
+        BigDecimal riskRate = valueOrDefault(riskPercent, BigDecimal.ONE)
+                .divide(new BigDecimal("100"), 18, RoundingMode.HALF_UP);
+        BigDecimal atrDistance = pending.getAtr() == null || pending.getAtrMultiplier() == null
+                ? pending.getEntryPrice().subtract(pending.getStopPrice()).abs()
+                : pending.getAtr().multiply(pending.getAtrMultiplier());
+
+        if (getStopTriggerBasis() == TriggerBasis.PNL_PERCENT) {
+            this.possibleLoss = requiredMargin.multiply(riskRate);
+            BigDecimal move = possibleLoss.divide(quantity, 18, RoundingMode.HALF_UP);
+            this.initialStopPrice = longSide ? entryPrice.subtract(move) : entryPrice.add(move);
+        } else {
+            this.initialStopPrice = longSide ? entryPrice.subtract(atrDistance) : entryPrice.add(atrDistance);
+            this.possibleLoss = atrDistance.multiply(quantity);
+        }
+        this.currentStopPrice = initialStopPrice;
+
+        if (getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
+            this.targetPrice = null;
+            this.possibleProfit = null;
+            this.takeProfitTriggerBasis = null;
+            return;
+        }
+
+        this.takeProfitTriggerBasis = pending.getTakeProfitTriggerBasis();
+        if (getTakeProfitTriggerBasis() == TriggerBasis.PNL_PERCENT) {
+            this.possibleProfit = requiredMargin.multiply(riskRate);
+            BigDecimal move = possibleProfit.divide(quantity, 18, RoundingMode.HALF_UP);
+            this.targetPrice = longSide ? entryPrice.add(move) : entryPrice.subtract(move);
+        } else {
+            this.targetPrice = longSide ? entryPrice.add(atrDistance) : entryPrice.subtract(atrDistance);
+            this.possibleProfit = atrDistance.multiply(quantity);
+        }
+    }
+
+    private static BigDecimal calculateRequiredMargin(BigDecimal entryPrice, BigDecimal quantity, BigDecimal leverage) {
+        if (entryPrice == null || quantity == null || leverage == null || leverage.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return entryPrice.multiply(quantity).divide(leverage, 18, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal valueOrDefault(BigDecimal value, BigDecimal defaultValue) {
+        return value == null ? defaultValue : value;
     }
 
     public void appendEvent(String message) {
@@ -217,6 +260,13 @@ public class ManagedPositionEntity {
         this.updatedAt = this.closedAt;
     }
 
+    public void markTestClosed(ManagedPositionCloseReason reason, BigDecimal realizedPnl, BigDecimal closePrice) {
+        this.closeReason = reason;
+        this.closeOrderId = "TEST-CLOSE-" + id;
+        appendEvent("TEST_CLOSE_TRIGGERED reason=" + reason + ", closePrice=" + closePrice);
+        markClosed(realizedPnl, closePrice);
+    }
+
     public void markFailed() {
         this.status = ManagedPositionStatus.FAILED;
         appendEvent("ERROR status=FAILED, reason=" + this.closeReason);
@@ -255,6 +305,10 @@ public class ManagedPositionEntity {
     public BigDecimal getRaiseTriggerValue() { return raiseTriggerValue; }
     public RaiseStopType getRaiseStopType() { return raiseStopType; }
     public BigDecimal getRaiseStopValue() { return raiseStopValue; }
+    public TradeExecutionMode getExecutionMode() {
+        return executionMode == null ? TradeExecutionMode.REAL : executionMode;
+    }
+    public boolean isTestOrder() { return getExecutionMode() == TradeExecutionMode.TEST; }
     public boolean isRaiseActivated() { return raiseActivated; }
     public BigDecimal getHighestPrice() { return highestPrice; }
     public BigDecimal getLowestPrice() { return lowestPrice; }

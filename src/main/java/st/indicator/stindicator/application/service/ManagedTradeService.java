@@ -13,12 +13,15 @@ import st.indicator.stindicator.application.dto.AtrOrderPreview;
 import st.indicator.stindicator.domain.entity.*;
 import st.indicator.stindicator.infra.connector.entity.ManagedPositionEntity;
 import st.indicator.stindicator.infra.connector.entity.ManagedPositionJournalEntity;
+import st.indicator.stindicator.infra.connector.entity.ManagedStopHistoryEntity;
 import st.indicator.stindicator.infra.connector.entity.PendingOrderEntity;
 import st.indicator.stindicator.infra.connector.repository.ManagedPositionJpaRepository;
 import st.indicator.stindicator.infra.connector.repository.ManagedPositionJournalJpaRepository;
+import st.indicator.stindicator.infra.connector.repository.ManagedStopHistoryJpaRepository;
 import st.indicator.stindicator.infra.connector.repository.PendingOrderJpaRepository;
 import st.indicator.stindicator.infra.ws.MultiPlexManager;
 import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
+import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 import st.indicator.stindicator.presentation.ws.publisher.OrderTradeUpdateEvent;
@@ -31,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -41,8 +45,13 @@ public class ManagedTradeService {
     private final PendingOrderJpaRepository pendingOrderRepository;
     private final ManagedPositionJpaRepository managedPositionRepository;
     private final ManagedPositionJournalJpaRepository managedPositionJournalRepository;
+    private final ManagedStopHistoryJpaRepository managedStopHistoryRepository;
     private final MultiPlexManager multiPlexManager;
+    private final MonitorService monitorService;
     private final Set<Long> closingPositionIds = ConcurrentHashMap.newKeySet();
+    private final Set<Long> fillingTestOrderIds = ConcurrentHashMap.newKeySet();
+    private final Set<Long> evaluatingPositionIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> recordedStopUpdates = ConcurrentHashMap.newKeySet();
     private final Map<String, ManagedOrderSymbolRule> orderRuleCache = new ConcurrentHashMap<>();
 
     public ManagedTradeService(ClientService clientService,
@@ -50,13 +59,17 @@ public class ManagedTradeService {
                                PendingOrderJpaRepository pendingOrderRepository,
                                ManagedPositionJpaRepository managedPositionRepository,
                                ManagedPositionJournalJpaRepository managedPositionJournalRepository,
-                               MultiPlexManager multiPlexManager) {
+                               ManagedStopHistoryJpaRepository managedStopHistoryRepository,
+                               MultiPlexManager multiPlexManager,
+                               MonitorService monitorService) {
         this.clientService = clientService;
         this.exchangeConnector = exchangeConnector;
         this.pendingOrderRepository = pendingOrderRepository;
         this.managedPositionRepository = managedPositionRepository;
         this.managedPositionJournalRepository = managedPositionJournalRepository;
+        this.managedStopHistoryRepository = managedStopHistoryRepository;
         this.multiPlexManager = multiPlexManager;
+        this.monitorService = monitorService;
     }
 
     @PostConstruct
@@ -78,11 +91,24 @@ public class ManagedTradeService {
         if (!position.isLegacyManagedPolicy()) {
             return;
         }
+        BigDecimal previousStopPrice = position.getCurrentStopPrice();
         log.warn("legacy managed position detected id={}, symbol={}, mode={}, entryPrice={}, initialStop={}, currentStop={}, target={}",
                 position.getId(), position.getSymbol(), position.getMode(), position.getEntryPrice(),
                 position.getInitialStopPrice(), position.getCurrentStopPrice(), position.getTargetPrice());
         position.applyLegacyFixedPolicy();
         managedPositionRepository.save(position);
+        if (previousStopPrice != null && position.getCurrentStopPrice() != null
+                && previousStopPrice.compareTo(position.getCurrentStopPrice()) != 0) {
+            recordStopUpdate(
+                    position,
+                    position.getCurrentPrice() == null ? position.getEntryPrice() : position.getCurrentPrice(),
+                    previousStopPrice,
+                    position.getCurrentStopPrice(),
+                    position.getUnrealizedPnl(),
+                    null,
+                    ManagedStopUpdateReason.MIGRATION
+            );
+        }
         log.warn("legacy managed position migrated id={}, symbol={}, mode={}, raiseStopEnabled={}, initialStop={}, currentStop={}, target={}",
                 position.getId(), position.getSymbol(), position.getMode(), position.isRaiseStopEnabled(),
                 position.getInitialStopPrice(), position.getCurrentStopPrice(), position.getTargetPrice());
@@ -107,14 +133,10 @@ public class ManagedTradeService {
                 request.getTakeProfitTriggerBasis()
         );
         AtrOrderPreview preview = clientService.previewAtrOrder(command);
-        Order order = clientService.order(new st.indicator.stindicator.application.dto.OrderCommand(
-                preview.getSymbol(),
-                normalizeSide(preview.getSide()),
-                "LIMIT",
-                valueOrDefault(request.getTimeInForce(), "GTC"),
-                preview.getQuantity().toPlainString(),
-                preview.getEntryPrice().toPlainString()
-        ));
+        boolean testOrder = request.getExecutionMode() == TradeExecutionMode.TEST;
+        Order order = testOrder
+                ? testEntryOrder(preview)
+                : placeRealEntryOrder(request, preview);
         PendingOrderEntity pending = PendingOrderEntity.create(
                 userId,
                 preview.getSymbol(),
@@ -139,14 +161,43 @@ public class ManagedTradeService {
                 request.getRaiseTriggerType(),
                 request.getRaiseTriggerValue(),
                 request.getRaiseStopType(),
-                request.getRaiseStopValue()
+                request.getRaiseStopValue(),
+                request.getExecutionMode()
         );
         normalizePendingPolicyIfNeeded(pending);
         PendingOrderEntity saved = pendingOrderRepository.save(pending);
         multiPlexManager.subscribeMarkPrice(saved.getSymbol());
-        log.info("managed pending order created id={}, symbol={}, orderId={}, quantity={}, requiredMargin={}",
-                saved.getId(), saved.getSymbol(), saved.getOrderId(), saved.getQuantity(), saved.getRequiredMargin());
+        if (testOrder) {
+            log.info("managed test pending order created id={}, symbol={}, entryPrice={}, quantity={}, leverage={}, requiredMargin={}, BinanceOrderApiCalled=false",
+                    saved.getId(), saved.getSymbol(), saved.getEntryPrice(), saved.getQuantity(),
+                    saved.getLeverage(), saved.getRequiredMargin());
+        } else {
+            log.info("managed real pending order created id={}, symbol={}, orderId={}, quantity={}, requiredMargin={}",
+                    saved.getId(), saved.getSymbol(), saved.getOrderId(), saved.getQuantity(), saved.getRequiredMargin());
+        }
         return saved;
+    }
+
+    private Order placeRealEntryOrder(ManagedAtrOrderRequestDto request, AtrOrderPreview preview) {
+        changeLeverage(preview.getSymbol(), preview.getLeverage());
+        return clientService.order(new st.indicator.stindicator.application.dto.OrderCommand(
+                preview.getSymbol(),
+                normalizeSide(preview.getSide()),
+                "LIMIT",
+                valueOrDefault(request.getTimeInForce(), "GTC"),
+                preview.getQuantity().toPlainString(),
+                preview.getEntryPrice().toPlainString()
+        ));
+    }
+
+    private Order testEntryOrder(AtrOrderPreview preview) {
+        String id = "TEST-" + UUID.randomUUID();
+        return new Order(id, preview.getSymbol(), "FILLED", id,
+                preview.getEntryPrice(), preview.getEntryPrice(), preview.getQuantity(), preview.getQuantity(),
+                preview.getQuantity(), preview.getEntryPrice().multiply(preview.getQuantity()),
+                "GTC", "LIMIT", false, false, normalizeSide(preview.getSide()),
+                "BOTH", BigDecimal.ZERO, null, false, "LIMIT", null, null, null,
+                String.valueOf(System.currentTimeMillis()));
     }
 
     @Transactional
@@ -173,7 +224,9 @@ public class ManagedTradeService {
         if (pending.getStatus() != PendingOrderStatus.PENDING) {
             return pending;
         }
-        clientService.cancelOrder(pending.getSymbol(), pending.getOrderId());
+        if (!pending.isTestOrder()) {
+            clientService.cancelOrder(pending.getSymbol(), pending.getOrderId());
+        }
         pending.mark(PendingOrderStatus.CANCELED);
         return pendingOrderRepository.save(pending);
     }
@@ -426,6 +479,13 @@ public class ManagedTradeService {
         return position(position.getId());
     }
 
+    @Transactional(readOnly = true)
+    public List<ManagedStopHistoryEntity> stopHistory(Long userId, Long positionId) {
+        position(userId, positionId);
+        return managedStopHistoryRepository
+                .findAllByManagedPosition_IdAndUserIdOrderByChangedAtDesc(positionId, userId);
+    }
+
     private void assertOwner(Long ownerUserId, Long sessionUserId) {
         if (ownerUserId == null || sessionUserId == null || !ownerUserId.equals(sessionUserId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "요청한 사용자의 데이터가 아닙니다.");
@@ -450,11 +510,67 @@ public class ManagedTradeService {
         if (event == null || event.price() == null) {
             return;
         }
+        pendingOrderRepository.findAllBySymbolAndStatusAndExecutionMode(
+                        event.symbol(), PendingOrderStatus.PENDING, TradeExecutionMode.TEST)
+                .stream()
+                .filter(pending -> testEntryReached(pending, event.price()))
+                .forEach(pending -> openTestPosition(pending, event.price()));
         managedPositionRepository.findAllBySymbolAndStatus(event.symbol(), ManagedPositionStatus.ACTIVE)
-                .forEach(position -> evaluatePosition(position, event.price()));
+                .forEach(position -> evaluatePositionOnce(position, event.price()));
+    }
+
+    private void evaluatePositionOnce(ManagedPositionEntity position, BigDecimal currentPrice) {
+        if (position == null
+                || position.getId() == null
+                || closingPositionIds.contains(position.getId())
+                || !evaluatingPositionIds.add(position.getId())) {
+            return;
+        }
+        try {
+            ManagedPositionEntity latest = managedPositionRepository.findById(position.getId()).orElse(null);
+            if (latest == null || latest.getStatus() != ManagedPositionStatus.ACTIVE
+                    || closingPositionIds.contains(latest.getId())) {
+                return;
+            }
+            evaluatePosition(latest, currentPrice);
+        } finally {
+            evaluatingPositionIds.remove(position.getId());
+        }
+    }
+
+    private boolean testEntryReached(PendingOrderEntity pending, BigDecimal currentPrice) {
+        return "BUY".equalsIgnoreCase(pending.getSide())
+                ? currentPrice.compareTo(pending.getEntryPrice()) <= 0
+                : currentPrice.compareTo(pending.getEntryPrice()) >= 0;
+    }
+
+    private void openTestPosition(PendingOrderEntity pending, BigDecimal currentPrice) {
+        if (pending.getStatus() != PendingOrderStatus.PENDING
+                || !pending.isTestOrder()
+                || !fillingTestOrderIds.add(pending.getId())) {
+            return;
+        }
+        try {
+            pending.mark(PendingOrderStatus.FILLED);
+            pendingOrderRepository.save(pending);
+            ManagedPositionEntity position = openManagedPosition(pending, pending.getEntryPrice(), pending.getQuantity());
+            position.appendEvent("TEST_ENTRY_FILLED limitPrice=" + pending.getEntryPrice()
+                    + ", triggerMarkPrice=" + currentPrice + ", BinanceOrderApiCalled=false");
+            managedPositionRepository.save(position);
+            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+            log.info("managed test order filled internally pendingId={}, positionId={}, symbol={}, configuredEntryPrice={}, fillPrice={}, quantity={}",
+                    pending.getId(), position.getId(), position.getSymbol(), pending.getEntryPrice(),
+                    position.getEntryPrice(), position.getQuantity());
+        } finally {
+            fillingTestOrderIds.remove(pending.getId());
+        }
     }
 
     private void handlePendingOrderUpdate(PendingOrderEntity pending, OrderTradeUpdateEvent event) {
+        if (pending.isTestOrder()) {
+            log.warn("ignored exchange event for test order id={}, orderId={}", pending.getId(), pending.getOrderId());
+            return;
+        }
         if (pending.getStatus() != PendingOrderStatus.PENDING) {
             return;
         }
@@ -462,12 +578,11 @@ public class ManagedTradeService {
             pending = repairPendingSizingIfNeeded(pending);
             pending.mark(PendingOrderStatus.FILLED);
             pendingOrderRepository.save(pending);
-            ManagedPositionEntity position = managedPositionRepository.save(
-                    ManagedPositionEntity.from(pending, event.averagePrice())
-            );
-            multiPlexManager.subscribeMarkPrice(position.getSymbol());
-            log.info("managed position opened id={}, symbol={}, entryOrderId={}",
-                    position.getId(), position.getSymbol(), position.getEntryOrderId());
+            ManagedPositionEntity position = openManagedPosition(pending, event.averagePrice(), event.executedQuantity());
+            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+            log.info("managed position opened id={}, symbol={}, entryOrderId={}, fillPrice={}, executedQuantity={}, leverage={}, requiredMargin={}",
+                    position.getId(), position.getSymbol(), position.getEntryOrderId(), position.getEntryPrice(),
+                    position.getQuantity(), position.getLeverage(), position.getRequiredMargin());
             return;
         }
         if (event.isCanceled()) {
@@ -481,6 +596,15 @@ public class ManagedTradeService {
         }
     }
 
+    private ManagedPositionEntity openManagedPosition(PendingOrderEntity pending, BigDecimal fillPrice,
+                                                      BigDecimal executedQuantity) {
+        ManagedPositionEntity position = managedPositionRepository.save(
+                ManagedPositionEntity.from(pending, fillPrice, executedQuantity)
+        );
+        multiPlexManager.subscribeMarkPrice(position.getSymbol());
+        return position;
+    }
+
     private void handleCloseOrderUpdate(ManagedPositionEntity position, OrderTradeUpdateEvent event) {
         if (position.getStatus() != ManagedPositionStatus.CLOSING || !event.isFilled()) {
             return;
@@ -492,11 +616,17 @@ public class ManagedTradeService {
         position.markClosed(realized, closePrice);
         closingPositionIds.remove(position.getId());
         managedPositionRepository.save(position);
+        monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
         log.info("managed position closed id={}, reason={}, realizedPnl={}",
                 position.getId(), position.getCloseReason(), realized);
     }
 
     private void evaluatePosition(ManagedPositionEntity position, BigDecimal currentPrice) {
+        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+            logRaiseStopEvaluation(position, currentPrice, null, null, null,
+                    false, false, "POSITION_NOT_ACTIVE");
+            return;
+        }
         if (position.isLegacyManagedPolicy()) {
             log.warn("legacy managed position found during price event id={}, symbol={}, mode={}, initialStop={}, currentStop={}, target={}",
                     position.getId(), position.getSymbol(), position.getMode(), position.getInitialStopPrice(),
@@ -508,18 +638,35 @@ public class ManagedTradeService {
         BigDecimal highest = max(position.getHighestPrice(), currentPrice);
         BigDecimal lowest = min(position.getLowestPrice(), currentPrice);
         BigDecimal nextStop = position.getCurrentStopPrice();
+        BigDecimal previousStop = position.getCurrentStopPrice();
         boolean raiseActivated = position.isRaiseActivated();
+        ManagedRaiseStopCalculator.RaiseStopPlan raisePlan = null;
+        boolean triggerReached = false;
+        boolean stopUpdateApplied = false;
+        String stopUpdateRejectedReason = "MODE_NOT_RAISING_STOP";
 
         ManagedPositionCloseReason reason = fixedCloseReason(position, currentPrice, pnl);
         if (position.getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
             log.debug("raising stop inspect id={}, symbol={}, mode={}, initialStop={}, currentStop={}, price={}, pnl={}, raiseActivated={}",
                     position.getId(), position.getSymbol(), position.getMode(), position.getInitialStopPrice(),
                     position.getCurrentStopPrice(), currentPrice, pnl, raiseActivated);
-            if (!raiseActivated && shouldActivateRaisingStop(position, currentPrice, pnl)) {
-                raiseActivated = true;
+            raisePlan = ManagedRaiseStopCalculator.calculate(position);
+            if (raisePlan == null) {
+                stopUpdateRejectedReason = "INVALID_CALCULATION";
+            } else {
+                triggerReached = ManagedRaiseStopCalculator.reached(position, currentPrice, pnl, raisePlan);
+                stopUpdateRejectedReason = triggerReached
+                        ? "NOT_BETTER_THAN_CURRENT_STOP"
+                        : "TRIGGER_NOT_REACHED";
             }
-            if (raiseActivated && position.isRaiseStopEnabled()) {
-                nextStop = nextRaisedStop(position, currentPrice, pnl);
+            if (triggerReached && isBetterStop(position, raisePlan.nextStopPrice())) {
+                raiseActivated = true;
+                nextStop = raisePlan.nextStopPrice();
+                stopUpdateApplied = true;
+                stopUpdateRejectedReason = null;
+                log.info("managed raise trigger reached id={}, symbol={}, basis={}, currentPrice={}, currentPnl={}, triggerPrice={}, triggerPnl={}, previousStop={}, nextStop={}",
+                        position.getId(), position.getSymbol(), position.getStopTriggerBasis(), currentPrice, pnl,
+                        raisePlan.triggerPrice(), raisePlan.triggerPnl(), position.getCurrentStopPrice(), nextStop);
             }
             reason = raisingCloseReason(position, currentPrice, pnl, nextStop, raiseActivated);
         }
@@ -529,8 +676,10 @@ public class ManagedTradeService {
                     position.getCurrentStopPrice(), nextStop);
             nextStop = position.getCurrentStopPrice();
             raiseActivated = false;
+            stopUpdateApplied = false;
+            stopUpdateRejectedReason = "MODE_NOT_RAISING_STOP";
         }
-        if (nextStop.compareTo(position.getCurrentStopPrice()) != 0) {
+        if (stopUpdateApplied && nextStop.compareTo(position.getCurrentStopPrice()) != 0) {
             log.info("managed stop changed id={}, symbol={}, mode={}, initialStop={}, previousStop={}, nextStop={}, price={}, pnl={}",
                     position.getId(), position.getSymbol(), position.getMode(), position.getInitialStopPrice(),
                     position.getCurrentStopPrice(), nextStop, currentPrice, pnl);
@@ -540,6 +689,15 @@ public class ManagedTradeService {
 
         position.updateMarket(currentPrice, pnl, highest, lowest, nextStop, raiseActivated);
         managedPositionRepository.save(position);
+        if (stopUpdateApplied) {
+            ManagedStopUpdateReason updateReason = position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT
+                    ? ManagedStopUpdateReason.PNL_TRIGGER_REACHED
+                    : ManagedStopUpdateReason.PRICE_TRIGGER_REACHED;
+            recordStopUpdate(position, currentPrice, previousStop, nextStop, pnl, raisePlan, updateReason);
+        }
+        monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+        logRaiseStopEvaluation(position, currentPrice, pnl, raisePlan, nextStop,
+                triggerReached, stopUpdateApplied, stopUpdateRejectedReason);
         if (reason != null) {
             position.appendEvent("CLOSE_CONDITION_REACHED reason=" + reason + ", price=" + currentPrice
                     + ", stop=" + nextStop + ", pnl=" + pnl);
@@ -552,38 +710,70 @@ public class ManagedTradeService {
         }
     }
 
-    private boolean shouldActivateRaisingStop(ManagedPositionEntity position, BigDecimal currentPrice, BigDecimal currentPnl) {
-        BigDecimal triggerValue = valueOrZero(position.getRaiseTriggerValue());
-        if (triggerValue.signum() <= 0) {
-            return currentPnl.signum() > 0;
-        }
-        RaiseStopType triggerType = position.getRaiseTriggerType() == null ? RaiseStopType.PERCENT : position.getRaiseTriggerType();
-        if (position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT) {
-            if (triggerType == RaiseStopType.AMOUNT) {
-                return currentPnl.compareTo(triggerValue) >= 0;
-            }
-            if (position.getRequiredMargin() == null || position.getRequiredMargin().signum() <= 0) {
-                return false;
-            }
-            BigDecimal pnlPercent = currentPnl
-                    .divide(position.getRequiredMargin(), 10, RoundingMode.HALF_UP)
-                    .multiply(new BigDecimal("100"));
-            return pnlPercent.compareTo(triggerValue) >= 0;
-        }
-
-        BigDecimal favorableMove = isLong(position)
-                ? currentPrice.subtract(position.getEntryPrice())
-                : position.getEntryPrice().subtract(currentPrice);
-        if (favorableMove.signum() <= 0) {
+    private boolean isBetterStop(ManagedPositionEntity position, BigDecimal candidate) {
+        if (candidate == null || position.getCurrentStopPrice() == null) {
             return false;
         }
-        if (triggerType == RaiseStopType.AMOUNT) {
-            return favorableMove.compareTo(triggerValue) >= 0;
+        return isLong(position)
+                ? candidate.compareTo(position.getCurrentStopPrice()) > 0
+                : candidate.compareTo(position.getCurrentStopPrice()) < 0;
+    }
+
+    private void recordStopUpdate(
+            ManagedPositionEntity position,
+            BigDecimal currentPrice,
+            BigDecimal previousStop,
+            BigDecimal newStop,
+            BigDecimal pnl,
+            ManagedRaiseStopCalculator.RaiseStopPlan plan,
+            ManagedStopUpdateReason reason
+    ) {
+        if (position.getId() == null
+                || previousStop == null
+                || newStop == null
+                || previousStop.compareTo(newStop) == 0) {
+            return;
         }
-        BigDecimal priceMovePercent = favorableMove
-                .divide(position.getEntryPrice(), 10, RoundingMode.HALF_UP)
-                .multiply(new BigDecimal("100"));
-        return priceMovePercent.compareTo(triggerValue) >= 0;
+        String fingerprint = position.getId() + ":" + newStop.stripTrailingZeros().toPlainString();
+        if (!recordedStopUpdates.add(fingerprint)
+                || managedStopHistoryRepository.existsByManagedPosition_IdAndNewStopPrice(position.getId(), newStop)) {
+            return;
+        }
+        try {
+            managedStopHistoryRepository.save(ManagedStopHistoryEntity.create(
+                    position,
+                    currentPrice,
+                    previousStop,
+                    newStop,
+                    pnl == null ? BigDecimal.ZERO : pnl,
+                    pnl == null ? BigDecimal.ZERO : pnlPercent(position, pnl),
+                    pricePercent(position, currentPrice),
+                    plan,
+                    reason
+            ));
+        } catch (RuntimeException e) {
+            recordedStopUpdates.remove(fingerprint);
+            throw e;
+        }
+    }
+
+    private void logRaiseStopEvaluation(
+            ManagedPositionEntity position,
+            BigDecimal currentPrice,
+            BigDecimal pnl,
+            ManagedRaiseStopCalculator.RaiseStopPlan plan,
+            BigDecimal evaluatedStop,
+            boolean triggerReached,
+            boolean stopUpdateApplied,
+            String rejectedReason
+    ) {
+        log.debug("managed raise stop evaluated positionId={}, side={}, entryPrice={}, currentPrice={}, currentStopPrice={}, triggerBasis={}, triggerValue={}, triggerPrice={}, triggerReached={}, protectType={}, protectValue={}, expectedNextStopPrice={}, stopUpdateApplied={}, stopUpdateRejectedReason={}, currentPnl={}, currentPnlPercent={}, currentPriceChangePercent={}, evaluatedStop={}",
+                position.getId(), position.getEntrySide(), position.getEntryPrice(), currentPrice,
+                position.getCurrentStopPrice(), position.getStopTriggerBasis(), position.getRaiseTriggerValue(),
+                plan == null ? null : plan.triggerPrice(), triggerReached, position.getRaiseStopType(),
+                position.getRaiseStopValue(), plan == null ? null : plan.nextStopPrice(), stopUpdateApplied,
+                rejectedReason, pnl, pnl == null ? null : pnlPercent(position, pnl),
+                currentPrice == null ? null : pricePercent(position, currentPrice), evaluatedStop);
     }
 
     private ManagedPositionCloseReason fixedCloseReason(ManagedPositionEntity position, BigDecimal price, BigDecimal pnl) {
@@ -614,6 +804,12 @@ public class ManagedTradeService {
     private ManagedPositionCloseReason raisingCloseReason(ManagedPositionEntity position, BigDecimal price,
                                                           BigDecimal pnl, BigDecimal stop, boolean activated) {
         if (position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT) {
+            if (!activated && (position.getPossibleLoss() == null || position.getPossibleLoss().signum() <= 0)) {
+                log.error("managed close evaluation skipped because possibleLoss is invalid id={}, symbol={}, possibleLoss={}, requiredMargin={}, quantity={}",
+                        position.getId(), position.getSymbol(), position.getPossibleLoss(),
+                        position.getRequiredMargin(), position.getQuantity());
+                return null;
+            }
             BigDecimal stopPnlLine = activated
                     ? calculatePnl(position, stop)
                     : position.getPossibleLoss().negate();
@@ -635,8 +831,19 @@ public class ManagedTradeService {
         if (position.getStatus() != ManagedPositionStatus.ACTIVE || !closingPositionIds.add(position.getId())) {
             return;
         }
+        if (position.isTestOrder()) {
+            BigDecimal closePrice = position.getCurrentPrice() == null ? position.getEntryPrice() : position.getCurrentPrice();
+            position.markTestClosed(reason, calculatePnl(position, closePrice), closePrice);
+            closingPositionIds.remove(position.getId());
+            managedPositionRepository.save(position);
+            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+            log.info("managed test position closed internally id={}, symbol={}, reason={}, closePrice={}, realizedPnl={}",
+                    position.getId(), position.getSymbol(), reason, closePrice, position.getRealizedPnl());
+            return;
+        }
         position.markClosing(null, reason);
         managedPositionRepository.save(position);
+        monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
         try {
             Order order = exchangeConnector.order(closeCurrentPriceParams(position));
             position.markClosing(order.getOrderId(), reason);
@@ -646,10 +853,12 @@ public class ManagedTradeService {
                 closingPositionIds.remove(position.getId());
             }
             managedPositionRepository.save(position);
+            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
         } catch (RuntimeException e) {
             position.markFailed();
             closingPositionIds.remove(position.getId());
             managedPositionRepository.save(position);
+            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
             throw e;
         }
     }
@@ -723,44 +932,6 @@ public class ManagedTradeService {
         return value.stripTrailingZeros().toPlainString();
     }
 
-    private BigDecimal nextRaisedStop(ManagedPositionEntity position, BigDecimal currentPrice, BigDecimal currentPnl) {
-        BigDecimal currentStop = position.getCurrentStopPrice();
-        if (position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT) {
-            BigDecimal protectedPnl;
-            if (position.getRaiseStopType() == RaiseStopType.AMOUNT) {
-                protectedPnl = valueOrZero(position.getRaiseStopValue());
-            } else {
-                BigDecimal percent = valueOrZero(position.getRaiseStopValue()).divide(new BigDecimal("100"), 10, RoundingMode.HALF_UP);
-                protectedPnl = currentPnl.multiply(percent);
-            }
-            BigDecimal candidate = priceAtPnl(position, protectedPnl);
-            if (isLong(position)) {
-                return candidate.compareTo(currentStop) > 0 ? candidate : currentStop;
-            }
-            return candidate.compareTo(currentStop) < 0 ? candidate : currentStop;
-        }
-
-        BigDecimal candidate;
-        if (position.getRaiseStopType() == RaiseStopType.AMOUNT) {
-            candidate = isLong(position)
-                    ? currentPrice.subtract(valueOrZero(position.getRaiseStopValue()))
-                    : currentPrice.add(valueOrZero(position.getRaiseStopValue()));
-        } else {
-            BigDecimal percent = valueOrZero(position.getRaiseStopValue()).divide(new BigDecimal("100"), 10, RoundingMode.HALF_UP);
-            BigDecimal profitGap = isLong(position)
-                    ? currentPrice.subtract(position.getEntryPrice())
-                    : position.getEntryPrice().subtract(currentPrice);
-            BigDecimal protectedProfit = profitGap.multiply(percent);
-            candidate = isLong(position)
-                    ? position.getEntryPrice().add(protectedProfit)
-                    : position.getEntryPrice().subtract(protectedProfit);
-        }
-        if (isLong(position)) {
-            return candidate.compareTo(currentStop) > 0 ? candidate : currentStop;
-        }
-        return candidate.compareTo(currentStop) < 0 ? candidate : currentStop;
-    }
-
     // 수수료와 펀딩비는 초기 구현에서 제외한다.
     private BigDecimal calculatePnl(ManagedPositionEntity position, BigDecimal price) {
         return isLong(position)
@@ -768,14 +939,37 @@ public class ManagedTradeService {
                 : position.getEntryPrice().subtract(price).multiply(position.getQuantity());
     }
 
-    private BigDecimal priceAtPnl(ManagedPositionEntity position, BigDecimal pnl) {
-        if (position.getQuantity() == null || position.getQuantity().signum() == 0) {
-            return position.getEntryPrice();
+    private void changeLeverage(String symbol, BigDecimal leverage) {
+        BigDecimal normalized = leverage == null ? BigDecimal.ONE : leverage.stripTrailingZeros();
+        if (normalized.scale() > 0 || normalized.compareTo(BigDecimal.ONE) < 0
+                || normalized.compareTo(new BigDecimal("125")) > 0) {
+            throw new IllegalArgumentException("레버리지는 1부터 125 사이의 정수여야 합니다.");
         }
-        BigDecimal priceMove = pnl.divide(position.getQuantity(), 10, RoundingMode.HALF_UP);
-        return isLong(position)
-                ? position.getEntryPrice().add(priceMove)
-                : position.getEntryPrice().subtract(priceMove);
+        exchangeConnector.changeLeverage(Map.of(
+                "symbol", requireText(symbol, "레버리지 변경 심볼은 필수입니다.").toUpperCase(Locale.ROOT),
+                "leverage", normalized.toPlainString(),
+                "timestamp", String.valueOf(System.currentTimeMillis())
+        ));
+        log.info("managed order leverage changed symbol={}, leverage={}", symbol, normalized);
+    }
+
+    private BigDecimal pnlPercent(ManagedPositionEntity position, BigDecimal pnl) {
+        if (position.getRequiredMargin() == null || position.getRequiredMargin().signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return pnl.divide(position.getRequiredMargin(), 10, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal("100"));
+    }
+
+    private BigDecimal pricePercent(ManagedPositionEntity position, BigDecimal price) {
+        if (position.getEntryPrice() == null || position.getEntryPrice().signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal move = isLong(position)
+                ? price.subtract(position.getEntryPrice())
+                : position.getEntryPrice().subtract(price);
+        return move.divide(position.getEntryPrice(), 10, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal("100"));
     }
 
     private BigDecimal fillPrice(Order order, BigDecimal fallback) {

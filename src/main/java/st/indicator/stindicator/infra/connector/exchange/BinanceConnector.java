@@ -27,6 +27,7 @@ public class BinanceConnector implements ExchangeConnector {
     private static final String TOTAL_WALLET_BALANCE = "totalWalletBalance";
     private static final String CANDLE_PATH = "https://fapi.binance.com/fapi/v1/klines";
     private static final String ORDER_PATH = "https://fapi.binance.com/fapi/v1/order";
+    private static final String LEVERAGE_PATH = "https://fapi.binance.com/fapi/v1/leverage";
     private static final String POSITION_RISK_PATH = "https://fapi.binance.com/fapi/v2/positionRisk";
     private static final String EXCHANGE_INFO_PATH = "https://fapi.binance.com/fapi/v1/exchangeInfo";
     private static final String PRICE_PATH = "https://fapi.binance.com/fapi/v1/ticker/price";
@@ -198,6 +199,16 @@ public class BinanceConnector implements ExchangeConnector {
         } catch (IOException e) {
             throw new RuntimeException(e);
         } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public void changeLeverage(Map<String, String> params) {
+        try {
+            String response = exchangeClient.post(LEVERAGE_PATH, params);
+            assertBinanceSuccess(response, "leverage change");
+        } catch (NoSuchAlgorithmException | InvalidKeyException | IOException | InterruptedException e) {
             throw new RuntimeException(e);
         }
     }

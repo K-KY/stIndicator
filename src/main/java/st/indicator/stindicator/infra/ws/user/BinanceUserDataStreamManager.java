@@ -10,6 +10,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.netty.Connection;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.websocket.WebsocketOutbound;
 import st.indicator.stindicator.presentation.ws.publisher.OrderTradeUpdateEvent;
@@ -20,7 +21,10 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 public class BinanceUserDataStreamManager {
@@ -32,6 +36,11 @@ public class BinanceUserDataStreamManager {
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private volatile WebsocketOutbound outbound;
     private volatile Disposable connection;
+    private volatile Connection channel;
+    private volatile ScheduledFuture<?> pingTask;
+    private volatile ScheduledFuture<?> keepAliveTask;
+    private final AtomicBoolean connecting = new AtomicBoolean();
+    private final AtomicBoolean reconnectScheduled = new AtomicBoolean();
     private volatile boolean shuttingDown;
 
     public BinanceUserDataStreamManager(BinanceUserDataStreamRestClient restClient,
@@ -49,13 +58,14 @@ public class BinanceUserDataStreamManager {
             return;
         }
         refreshAndConnect();
-        executor.scheduleAtFixedRate(this::keepAlive, 30, 30, TimeUnit.MINUTES);
-        executor.scheduleAtFixedRate(this::sendPing, 15, 15, TimeUnit.SECONDS);
+        keepAliveTask = executor.scheduleAtFixedRate(this::keepAlive, 30, 30, TimeUnit.MINUTES);
     }
 
     @PreDestroy
     public void shutdown() {
         shuttingDown = true;
+        cancelPingTask();
+        cancelTask(keepAliveTask, "user data keepalive task canceled");
         if (connection != null && !connection.isDisposed()) {
             connection.dispose();
         }
@@ -63,40 +73,54 @@ public class BinanceUserDataStreamManager {
     }
 
     private void refreshAndConnect() {
+        if (shuttingDown) {
+            return;
+        }
+        if (!connecting.compareAndSet(false, true)) {
+            log.info("user data reconnect skipped: already reconnecting");
+            return;
+        }
         try {
             String listenKey = restClient.start();
             connect(listenKey);
-            log.info("binance user data stream connected");
         } catch (RuntimeException e) {
+            connecting.set(false);
             log.warn("binance user data stream connect failed, retry soon", e);
-            executor.schedule(this::refreshAndConnect, 5, TimeUnit.SECONDS);
+            requestReconnect("listenKey creation failed");
         }
     }
 
     private void connect(String listenKey) {
-        if (connection != null && !connection.isDisposed()) {
-            connection.dispose();
-        }
+        cancelPingTask();
+        disposeConnection();
         connection = HttpClient.create()
                 .websocket()
                 .uri(PRIVATE_WS_BASE_URL + listenKey)
                 .handle((in, out) -> {
+                    in.withConnection(activeChannel -> this.channel = activeChannel);
                     this.outbound = out;
+                    connecting.set(false);
+                    reconnectScheduled.set(false);
+                    startPingTask();
+                    log.info("binance user data stream connected");
                     return in.receive()
                             .asString()
                             .doOnNext(this::handleMessage)
-                            .doFinally(signal -> {
-                                this.outbound = null;
-                                if (!shuttingDown) {
-                                    log.warn("binance user data stream closed signal={}", signal);
-                                    executor.schedule(this::refreshAndConnect, 1, TimeUnit.SECONDS);
-                                }
-                            })
+                            .doFinally(this::handleConnectionClosed)
                             .then();
                 })
-                .retryWhen(reactor.util.retry.Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1))
-                        .maxBackoff(Duration.ofSeconds(30)))
-                .subscribe();
+                .subscribe(
+                        ignored -> { },
+                        error -> {
+                            connecting.set(false);
+                            log.warn("binance user data stream connection failed", error);
+                            requestReconnect("connection failed");
+                        },
+                        () -> {
+                            connecting.set(false);
+                            requestReconnect("connection completed");
+                        }
+                );
     }
 
     private void keepAlive() {
@@ -104,15 +128,104 @@ public class BinanceUserDataStreamManager {
             restClient.keepAlive();
         } catch (RuntimeException e) {
             log.warn("binance user data stream keepalive failed, recreate listenKey", e);
-            refreshAndConnect();
+            requestReconnect("listenKey keepalive failed");
         }
     }
 
     private void sendPing() {
-        if (outbound != null) {
-            outbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
-                    .then()
-                    .subscribe();
+        if (!isConnectionActive()) {
+            log.info("ping skipped: user data connection not active");
+            requestReconnect("ping found inactive connection");
+            return;
+        }
+        outbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
+                .then()
+                .subscribe(
+                        ignored -> { },
+                        error -> {
+                            log.warn("user data websocket ping failed", error);
+                            requestReconnect("ping failed");
+                        },
+                        () -> log.debug("user data websocket ping success")
+                );
+    }
+
+    private boolean isConnectionActive() {
+        return !shuttingDown
+                && connection != null
+                && !connection.isDisposed()
+                && outbound != null
+                && channel != null
+                && !channel.isDisposed()
+                && channel.channel().isActive();
+    }
+
+    private void startPingTask() {
+        cancelPingTask();
+        if (shuttingDown) {
+            return;
+        }
+        try {
+            pingTask = executor.scheduleAtFixedRate(this::sendPing, 15, 15, TimeUnit.SECONDS);
+            log.info("user data ping task started");
+        } catch (RejectedExecutionException error) {
+            if (!shuttingDown) {
+                log.error("user data ping task start failed", error);
+            }
+        }
+    }
+
+    private void cancelPingTask() {
+        ScheduledFuture<?> task = pingTask;
+        pingTask = null;
+        cancelTask(task, "user data ping task canceled");
+    }
+
+    private void cancelTask(ScheduledFuture<?> task, String message) {
+        if (task != null && !task.isDone()) {
+            task.cancel(false);
+            log.info(message);
+        }
+    }
+
+    private void handleConnectionClosed(reactor.core.publisher.SignalType signal) {
+        outbound = null;
+        channel = null;
+        cancelPingTask();
+        if (!shuttingDown) {
+            log.warn("binance user data stream closed signal={}", signal);
+            requestReconnect("connection closed signal=" + signal);
+        }
+    }
+
+    private void requestReconnect(String reason) {
+        if (shuttingDown) {
+            return;
+        }
+        if (!reconnectScheduled.compareAndSet(false, true)) {
+            log.info("user data reconnect skipped: already reconnecting");
+            return;
+        }
+        log.warn("user data reconnect requested reason={}", reason);
+        cancelPingTask();
+        disposeConnection();
+        try {
+            executor.schedule(() -> {
+                reconnectScheduled.set(false);
+                refreshAndConnect();
+            }, 1, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException error) {
+            reconnectScheduled.set(false);
+            if (!shuttingDown) {
+                log.error("user data reconnect scheduling failed", error);
+            }
+        }
+    }
+
+    private void disposeConnection() {
+        Disposable current = connection;
+        if (current != null && !current.isDisposed()) {
+            current.dispose();
         }
     }
 
