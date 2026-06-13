@@ -3,6 +3,7 @@ package st.indicator.stindicator.presentation.dto;
 import st.indicator.stindicator.domain.entity.ManagedOrderMode;
 import st.indicator.stindicator.domain.entity.RaiseStopType;
 import st.indicator.stindicator.domain.entity.TriggerBasis;
+import st.indicator.stindicator.domain.entity.TradeExecutionMode;
 
 import java.math.BigDecimal;
 
@@ -26,6 +27,7 @@ public class ManagedAtrOrderRequestDto {
     private BigDecimal raiseTriggerValue;
     private RaiseStopType raiseStopType;
     private BigDecimal raiseStopValue;
+    private TradeExecutionMode executionMode = TradeExecutionMode.REAL;
 
     public String getSymbol() { return symbol; }
     public String getSide() { return side; }
@@ -46,6 +48,9 @@ public class ManagedAtrOrderRequestDto {
     public BigDecimal getRaiseTriggerValue() { return raiseTriggerValue; }
     public RaiseStopType getRaiseStopType() { return raiseStopType; }
     public BigDecimal getRaiseStopValue() { return raiseStopValue; }
+    public TradeExecutionMode getExecutionMode() {
+        return executionMode == null ? TradeExecutionMode.REAL : executionMode;
+    }
 
     public void setSymbol(String symbol) { this.symbol = symbol; }
     public void setSide(String side) { this.side = side; }
@@ -66,4 +71,5 @@ public class ManagedAtrOrderRequestDto {
     public void setRaiseTriggerValue(BigDecimal raiseTriggerValue) { this.raiseTriggerValue = raiseTriggerValue; }
     public void setRaiseStopType(RaiseStopType raiseStopType) { this.raiseStopType = raiseStopType; }
     public void setRaiseStopValue(BigDecimal raiseStopValue) { this.raiseStopValue = raiseStopValue; }
+    public void setExecutionMode(TradeExecutionMode executionMode) { this.executionMode = executionMode; }
 }

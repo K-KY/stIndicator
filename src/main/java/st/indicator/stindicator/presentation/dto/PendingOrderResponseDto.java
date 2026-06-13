@@ -41,6 +41,7 @@ public record PendingOrderResponseDto(
         BigDecimal predictedNextStopPrice,
         BigDecimal predictedNextStopAmount,
         BigDecimal predictedNextStopPercent,
+        String executionMode,
         String status,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
@@ -67,7 +68,8 @@ public record PendingOrderResponseDto(
                 entity.getRaiseTriggerValue(),
                 entity.getRaiseStopType() == null ? null : entity.getRaiseStopType().name(),
                 entity.getRaiseStopValue(), predictedNextStopPrice(entity), predictedNextStopAmount(entity),
-                predictedNextStopPercent(entity), entity.getStatus().name(), entity.getCreatedAt(), entity.getUpdatedAt());
+                predictedNextStopPercent(entity), entity.getExecutionMode().name(),
+                entity.getStatus().name(), entity.getCreatedAt(), entity.getUpdatedAt());
     }
 
     private static BigDecimal priceMovePercent(BigDecimal entryPrice, BigDecimal triggerPrice) {
