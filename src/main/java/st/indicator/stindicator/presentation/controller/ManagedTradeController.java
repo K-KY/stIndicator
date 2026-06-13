@@ -13,6 +13,7 @@ import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
+import st.indicator.stindicator.presentation.dto.ManagedStopHistoryResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 
@@ -81,6 +82,13 @@ public class ManagedTradeController implements ManagedTradeApi {
     @Override
     public ManagedPositionResponseDto position(Long id, HttpSession session) {
         return ManagedPositionResponseDto.from(managedTradeService.position(requireSessionUserId(session), id));
+    }
+
+    @Override
+    public List<ManagedStopHistoryResponseDto> stopHistory(Long id, HttpSession session) {
+        return managedTradeService.stopHistory(requireSessionUserId(session), id).stream()
+                .map(ManagedStopHistoryResponseDto::from)
+                .toList();
     }
 
     @Override
