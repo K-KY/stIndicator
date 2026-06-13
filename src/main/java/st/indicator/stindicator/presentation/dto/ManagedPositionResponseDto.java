@@ -1,5 +1,6 @@
 package st.indicator.stindicator.presentation.dto;
 
+import st.indicator.stindicator.application.service.ManagedRaiseStopCalculator;
 import st.indicator.stindicator.infra.connector.entity.ManagedPositionEntity;
 
 import java.math.BigDecimal;
@@ -32,7 +33,11 @@ public record ManagedPositionResponseDto(
         BigDecimal takeProfitPriceMovePercent,
         BigDecimal stopPnlPercent,
         BigDecimal takeProfitPnlPercent,
+        BigDecimal configuredRiskPercent,
+        BigDecimal currentStopPriceDistancePercent,
+        BigDecimal currentStopMarginPercent,
         BigDecimal profitRatePercent,
+        BigDecimal priceChangePercent,
         BigDecimal realizedPnlPercent,
         BigDecimal liquidationPrice,
         BigDecimal atr,
@@ -44,9 +49,11 @@ public record ManagedPositionResponseDto(
         BigDecimal raiseTriggerValue,
         String raiseStopType,
         BigDecimal raiseStopValue,
+        BigDecimal nextStopTriggerPrice,
         BigDecimal predictedNextStopPrice,
         BigDecimal predictedNextStopAmount,
         BigDecimal predictedNextStopPercent,
+        String executionMode,
         String status,
         String closeReason,
         String managementEvents,
@@ -57,6 +64,7 @@ public record ManagedPositionResponseDto(
     public static ManagedPositionResponseDto from(ManagedPositionEntity entity) {
         String side = "BUY".equalsIgnoreCase(entity.getEntrySide()) ? "LONG" : "SHORT";
         boolean raisingStopOnly = "RAISING_STOP_ONLY".equals(entity.getMode().name());
+        ManagedRaiseStopCalculator.RaiseStopPlan raisePlan = ManagedRaiseStopCalculator.calculate(entity);
         return new ManagedPositionResponseDto(entity.getId(), entity.getSymbol(), side, entity.getCloseSide(),
                 entity.getEntryOrderId(), entity.getCloseOrderId(), entity.getEntryPrice(), entity.getQuantity(),
                 entity.getCurrentPrice(), entity.getClosePrice(), entity.getUnrealizedPnl(), entity.getRealizedPnl(),
@@ -67,14 +75,22 @@ public record ManagedPositionResponseDto(
                 raisingStopOnly ? null : priceMovePercent(entity.getEntryPrice(), entity.getTargetPrice()),
                 pnlPercent(entity.getPossibleLoss(), entity.getRequiredMargin()),
                 raisingStopOnly ? null : pnlPercent(entity.getPossibleProfit(), entity.getRequiredMargin()),
-                profitRatePercent(entity), realizedPnlPercent(entity), liquidationPrice(entity),
+                entity.getRiskPercent(),
+                priceMovePercent(entity.getEntryPrice(), entity.getCurrentStopPrice()),
+                currentStopMarginPercent(entity),
+                profitRatePercent(entity), priceChangePercent(entity), realizedPnlPercent(entity), liquidationPrice(entity),
                 entity.getAtr(), entity.getAtrMultiplier(), entity.getRiskPercent(), entity.getMode().name(),
                 entity.isRaiseActivated(),
                 entity.getRaiseTriggerType() == null ? null : entity.getRaiseTriggerType().name(),
                 entity.getRaiseTriggerValue(),
                 entity.getRaiseStopType() == null ? null : entity.getRaiseStopType().name(),
-                entity.getRaiseStopValue(), predictedNextStopPrice(entity), predictedNextStopAmount(entity),
-                predictedNextStopPercent(entity), entity.getStatus().name(),
+                entity.getRaiseStopValue(),
+                raisePlan == null ? null : raisePlan.triggerPrice(),
+                raisePlan == null ? null : raisePlan.nextStopPrice(),
+                raisePlan == null ? null : raisePlan.protectedAmount(),
+                raisePlan == null ? null : raisePlan.protectedPercent(),
+                entity.getExecutionMode().name(),
+                entity.getStatus().name(),
                 entity.getCloseReason() == null ? null : entity.getCloseReason().name(),
                 entity.getManagementEvents(), entity.getOpenedAt(), entity.getClosedAt(), holdingSeconds(entity));
     }
@@ -98,6 +114,19 @@ public record ManagedPositionResponseDto(
         }
         return entity.getRealizedPnl()
                 .divide(entity.getRequiredMargin(), 8, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal("100"));
+    }
+
+    private static BigDecimal priceChangePercent(ManagedPositionEntity entity) {
+        if (entity.getCurrentPrice() == null
+                || entity.getEntryPrice() == null
+                || entity.getEntryPrice().signum() == 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal move = "BUY".equalsIgnoreCase(entity.getEntrySide())
+                ? entity.getCurrentPrice().subtract(entity.getEntryPrice())
+                : entity.getEntryPrice().subtract(entity.getCurrentPrice());
+        return move.divide(entity.getEntryPrice(), 8, RoundingMode.HALF_UP)
                 .multiply(new BigDecimal("100"));
     }
 
@@ -138,35 +167,19 @@ public record ManagedPositionResponseDto(
                 .multiply(new BigDecimal("100"));
     }
 
-    private static BigDecimal predictedNextStopPrice(ManagedPositionEntity entity) {
-        BigDecimal amount = predictedNextStopAmount(entity);
-        if (amount == null || entity.getQuantity() == null || entity.getQuantity().signum() <= 0) {
-            return null;
-        }
-        BigDecimal priceMove = amount.divide(entity.getQuantity(), 8, RoundingMode.HALF_UP);
-        return "BUY".equalsIgnoreCase(entity.getEntrySide())
-                ? entity.getEntryPrice().add(priceMove)
-                : entity.getEntryPrice().subtract(priceMove);
-    }
-
-    private static BigDecimal predictedNextStopAmount(ManagedPositionEntity entity) {
-        if (!"RAISING_STOP_ONLY".equals(entity.getMode().name())
-                || entity.getRaiseStopType() == null
-                || entity.getRaiseStopValue() == null) {
-            return null;
-        }
-        if ("AMOUNT".equals(entity.getRaiseStopType().name())) {
-            return entity.getRaiseStopValue();
-        }
-        if (entity.getUnrealizedPnl() == null || entity.getUnrealizedPnl().signum() <= 0) {
+    private static BigDecimal currentStopMarginPercent(ManagedPositionEntity entity) {
+        if (entity.getEntryPrice() == null
+                || entity.getCurrentStopPrice() == null
+                || entity.getQuantity() == null
+                || entity.getRequiredMargin() == null
+                || entity.getRequiredMargin().signum() == 0) {
             return BigDecimal.ZERO;
         }
-        return entity.getUnrealizedPnl()
-                .multiply(entity.getRaiseStopValue())
-                .divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP);
+        BigDecimal pnlAtStop = "BUY".equalsIgnoreCase(entity.getEntrySide())
+                ? entity.getCurrentStopPrice().subtract(entity.getEntryPrice()).multiply(entity.getQuantity())
+                : entity.getEntryPrice().subtract(entity.getCurrentStopPrice()).multiply(entity.getQuantity());
+        return pnlAtStop.divide(entity.getRequiredMargin(), 8, RoundingMode.HALF_UP)
+                .multiply(new BigDecimal("100"));
     }
 
-    private static BigDecimal predictedNextStopPercent(ManagedPositionEntity entity) {
-        return pnlPercent(predictedNextStopAmount(entity), entity.getRequiredMargin());
-    }
 }

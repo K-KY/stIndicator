@@ -33,4 +33,7 @@ public interface ExchangeConnector {
     Order orderDetail(Map<String, String> params);
     Order order(Map<String, String> params);
     Order cancelOrder(Map<String, String> params);
+    default void changeLeverage(Map<String, String> params) {
+        throw new UnsupportedOperationException("leverage change is not supported");
+    }
 }
