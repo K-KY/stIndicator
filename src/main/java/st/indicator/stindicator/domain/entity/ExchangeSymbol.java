@@ -11,15 +11,29 @@ public class ExchangeSymbol {
     private final java.math.BigDecimal quantityStepSize;
     private final java.math.BigDecimal minQuantity;
     private final java.math.BigDecimal priceTickSize;
+    private final java.math.BigDecimal quoteVolume;
+    private final java.math.BigDecimal lastPrice;
+    private final Integer rank;
 
     public ExchangeSymbol(String symbol, String baseAsset, String quoteAsset, String status) {
-        this(symbol, baseAsset, quoteAsset, status, null, null, null);
+        this(symbol, baseAsset, quoteAsset, status, null, null, null, null, null, null);
     }
 
     public ExchangeSymbol(String symbol, String baseAsset, String quoteAsset, String status,
                           java.math.BigDecimal quantityStepSize,
                           java.math.BigDecimal minQuantity,
                           java.math.BigDecimal priceTickSize) {
+        this(symbol, baseAsset, quoteAsset, status, quantityStepSize, minQuantity, priceTickSize,
+                null, null, null);
+    }
+
+    public ExchangeSymbol(String symbol, String baseAsset, String quoteAsset, String status,
+                          java.math.BigDecimal quantityStepSize,
+                          java.math.BigDecimal minQuantity,
+                          java.math.BigDecimal priceTickSize,
+                          java.math.BigDecimal quoteVolume,
+                          java.math.BigDecimal lastPrice,
+                          Integer rank) {
         this.symbol = symbol;
         this.baseAsset = baseAsset;
         this.quoteAsset = quoteAsset;
@@ -27,6 +41,9 @@ public class ExchangeSymbol {
         this.quantityStepSize = quantityStepSize;
         this.minQuantity = minQuantity;
         this.priceTickSize = priceTickSize;
+        this.quoteVolume = quoteVolume;
+        this.lastPrice = lastPrice;
+        this.rank = rank;
     }
 
     public String getSymbol() {
@@ -55,5 +72,17 @@ public class ExchangeSymbol {
 
     public java.math.BigDecimal getPriceTickSize() {
         return priceTickSize;
+    }
+
+    public java.math.BigDecimal getQuoteVolume() {
+        return quoteVolume;
+    }
+
+    public java.math.BigDecimal getLastPrice() {
+        return lastPrice;
+    }
+
+    public Integer getRank() {
+        return rank;
     }
 }

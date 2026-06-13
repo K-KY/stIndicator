@@ -18,8 +18,11 @@ import java.math.BigDecimal;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 
 @Component
 public class BinanceConnector implements ExchangeConnector {
@@ -30,6 +33,7 @@ public class BinanceConnector implements ExchangeConnector {
     private static final String LEVERAGE_PATH = "https://fapi.binance.com/fapi/v1/leverage";
     private static final String POSITION_RISK_PATH = "https://fapi.binance.com/fapi/v2/positionRisk";
     private static final String EXCHANGE_INFO_PATH = "https://fapi.binance.com/fapi/v1/exchangeInfo";
+    private static final String TICKER_24HR_PATH = "https://fapi.binance.com/fapi/v1/ticker/24hr";
     private static final String PRICE_PATH = "https://fapi.binance.com/fapi/v1/ticker/price";
     private static final String AVAILABLE_BALANCE = "availableBalance";
     private static final CandleMapper candleMapper = new CandleMapper();
@@ -116,25 +120,54 @@ public class BinanceConnector implements ExchangeConnector {
     @Override
     public List<ExchangeSymbol> getExchangeSymbols() throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
-        String response = exchangeClient.get(EXCHANGE_INFO_PATH, Map.of());
-        JsonNode root = readSuccessTree(response, "exchange info");
+        String exchangeInfoResponse = exchangeClient.get(EXCHANGE_INFO_PATH, Map.of());
+        String tickerResponse = exchangeClient.get(TICKER_24HR_PATH, Map.of());
+        JsonNode root = readSuccessTree(exchangeInfoResponse, "exchange info");
+        JsonNode tickerRoot = readSuccessTree(tickerResponse, "24hr ticker");
         JsonNode symbolsNode = requiredNode(root, "symbols", "exchange info");
-        List<ExchangeSymbol> symbols = new ArrayList<>();
+        Map<String, TickerSummary> tickerBySymbol = tickerSummaries(tickerRoot);
+        List<ExchangeSymbolCandidate> candidates = new ArrayList<>();
         for (JsonNode symbolNode : symbolsNode) {
-            if (!"TRADING".equalsIgnoreCase(symbolNode.get("status").asString())) {
+            String symbol = requiredText(symbolNode, "symbol", "exchange info symbol").toUpperCase(Locale.ROOT);
+            String status = requiredText(symbolNode, "status", "exchange info symbol");
+            String quoteAsset = requiredText(symbolNode, "quoteAsset", "exchange info symbol");
+            String contractType = requiredText(symbolNode, "contractType", "exchange info symbol");
+            if (!isSupportedUsdtPerpetual(symbol, status, quoteAsset, contractType)) {
                 continue;
             }
             BigDecimal quantityStepSize = filterDecimal(symbolNode, "LOT_SIZE", "stepSize");
             BigDecimal minQuantity = filterDecimal(symbolNode, "LOT_SIZE", "minQty");
             BigDecimal priceTickSize = filterDecimal(symbolNode, "PRICE_FILTER", "tickSize");
-            symbols.add(new ExchangeSymbol(
-                    symbolNode.get("symbol").asString(),
-                    symbolNode.get("baseAsset").asString(),
-                    symbolNode.get("quoteAsset").asString(),
-                    symbolNode.get("status").asString(),
+            TickerSummary ticker = tickerBySymbol.getOrDefault(symbol, TickerSummary.empty());
+            candidates.add(new ExchangeSymbolCandidate(
+                    symbol,
+                    requiredText(symbolNode, "baseAsset", "exchange info symbol"),
+                    quoteAsset,
+                    status,
                     quantityStepSize,
                     minQuantity,
-                    priceTickSize
+                    priceTickSize,
+                    ticker.quoteVolume(),
+                    ticker.lastPrice()
+            ));
+        }
+        candidates.sort(Comparator.comparing(ExchangeSymbolCandidate::quoteVolume).reversed()
+                .thenComparing(ExchangeSymbolCandidate::symbol));
+
+        List<ExchangeSymbol> symbols = new ArrayList<>(candidates.size());
+        for (int index = 0; index < candidates.size(); index++) {
+            ExchangeSymbolCandidate candidate = candidates.get(index);
+            symbols.add(new ExchangeSymbol(
+                    candidate.symbol(),
+                    candidate.baseAsset(),
+                    candidate.quoteAsset(),
+                    candidate.status(),
+                    candidate.quantityStepSize(),
+                    candidate.minQuantity(),
+                    candidate.priceTickSize(),
+                    candidate.quoteVolume(),
+                    candidate.lastPrice(),
+                    index + 1
             ));
         }
         return symbols;
@@ -267,5 +300,47 @@ public class BinanceConnector implements ExchangeConnector {
             }
         }
         return null;
+    }
+
+    private Map<String, TickerSummary> tickerSummaries(JsonNode tickerRoot) {
+        if (tickerRoot == null || !tickerRoot.isArray()) {
+            throw new IllegalStateException("Binance 24hr ticker response must be an array");
+        }
+        Map<String, TickerSummary> summaries = new HashMap<>();
+        for (JsonNode tickerNode : tickerRoot) {
+            String symbol = requiredText(tickerNode, "symbol", "24hr ticker").toUpperCase(Locale.ROOT);
+            summaries.put(symbol, new TickerSummary(
+                    requiredDecimal(tickerNode, "quoteVolume", "24hr ticker"),
+                    requiredDecimal(tickerNode, "lastPrice", "24hr ticker")
+            ));
+        }
+        return summaries;
+    }
+
+    private boolean isSupportedUsdtPerpetual(String symbol, String status, String quoteAsset, String contractType) {
+        return "TRADING".equalsIgnoreCase(status)
+                && "USDT".equalsIgnoreCase(quoteAsset)
+                && "PERPETUAL".equalsIgnoreCase(contractType)
+                && symbol.endsWith("USDT")
+                && !symbol.contains("TEST");
+    }
+
+    private record TickerSummary(BigDecimal quoteVolume, BigDecimal lastPrice) {
+        private static TickerSummary empty() {
+            return new TickerSummary(BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+    }
+
+    private record ExchangeSymbolCandidate(
+            String symbol,
+            String baseAsset,
+            String quoteAsset,
+            String status,
+            BigDecimal quantityStepSize,
+            BigDecimal minQuantity,
+            BigDecimal priceTickSize,
+            BigDecimal quoteVolume,
+            BigDecimal lastPrice
+    ) {
     }
 }
