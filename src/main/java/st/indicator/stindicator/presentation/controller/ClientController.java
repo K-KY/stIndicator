@@ -18,7 +18,6 @@ import st.indicator.stindicator.domain.entity.SymbolPrice;
 import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.presentation.dto.AtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.CandleRequestDto;
-import st.indicator.stindicator.presentation.dto.OrderRequestDto;
 import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.math.BigDecimal;
@@ -130,25 +129,6 @@ public class ClientController implements ClientApi {
     }
 
     /**
-     * 사용자가 직접 지정한 수량과 가격으로 일반 주문을 실행한다.
-     * ATR 계산 없이 바로 주문하고, 결과는 서비스 내부 주문 이력에도 함께 저장한다.
-     */
-    public Order order(OrderRequestDto dto) {
-        return order(dto, null);
-    }
-
-    @Override
-    public Order order(OrderRequestDto dto, HttpSession session) {
-        log.info("request order symbol={}, side={}, type={}, timeInForce={}, quantity={}, price={}",
-                dto.getSymbol(), dto.getSide(), dto.getType(), dto.getTimeInForce(), dto.getQuantity(), dto.getPrice());
-        Long userId = requireSessionUserId(session);
-        Order order = clientService.order(dto.toCommand());
-        orderService.save(userId, order.getOrderId(), order.getSymbol(), order.getSide(), order.getType(),
-                order.getTimeInForce(), toPlainString(order.getOrigQty()), toPlainString(order.getPrice()), order.getStatus());// 사용자 주문 저장
-        return order;
-    }
-
-    /**
      * 서비스 내부에 저장된 사용자 주문 이력을 심볼 기준으로 조회한다.
      * 거래소 원본 주문 조회와 달리, 우리 서비스가 저장한 주문 목록을 확인하는 용도다.
      */
@@ -174,10 +154,6 @@ public class ClientController implements ClientApi {
     public Order cancelOrder(String symbol, String orderId) {
         log.info("request cancelOrder symbol={}, orderId={}", symbol, orderId);
         return orderService.cancelOrder(symbol, orderId);
-    }
-
-    private String toPlainString(BigDecimal value) {
-        return value == null ? "0" : value.toPlainString();
     }
 
     private Long sessionUserId(HttpSession session) {

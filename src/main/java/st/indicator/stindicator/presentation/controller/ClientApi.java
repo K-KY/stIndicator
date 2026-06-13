@@ -20,7 +20,6 @@ import st.indicator.stindicator.domain.entity.SymbolPrice;
 import st.indicator.stindicator.domain.entity.UserOrder;
 import st.indicator.stindicator.presentation.dto.AtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.CandleRequestDto;
-import st.indicator.stindicator.presentation.dto.OrderRequestDto;
 import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.math.BigDecimal;
@@ -92,13 +91,6 @@ public interface ClientApi {
             @ApiResponse(responseCode = "200", description = "포지션 청산 성공")
     })
     Order liquidatePosition(@Parameter(description = "청산할 심볼", example = "BTCUSDT") String symbol);
-
-    @PostMapping("/order")
-    @Operation(summary = "일반 주문 실행", description = "사용자가 직접 지정한 수량과 가격으로 일반 주문을 실행한다.")
-    @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "일반 주문 실행 성공")
-    })
-    Order order(@ParameterObject OrderRequestDto dto, @Parameter(hidden = true) HttpSession session);
 
     @GetMapping("/order")
     @Operation(summary = "서비스 주문 이력 조회", description = "서비스 내부에 저장된 사용자 주문 이력을 심볼 기준으로 조회한다.")
