@@ -10,6 +10,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
+import reactor.netty.Connection;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.websocket.WebsocketOutbound;
 import st.indicator.stindicator.application.service.MonitorService;
@@ -25,7 +26,10 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Component
@@ -50,6 +54,15 @@ public class MultiPlexManager {
     private volatile WebsocketOutbound publicOutbound;
     private volatile Disposable connection;
     private volatile Disposable publicConnection;
+    private volatile Connection marketChannel;
+    private volatile Connection publicChannel;
+    private volatile ScheduledFuture<?> marketPingTask;
+    private volatile ScheduledFuture<?> publicPingTask;
+    private final AtomicBoolean marketConnecting = new AtomicBoolean();
+    private final AtomicBoolean publicConnecting = new AtomicBoolean();
+    private final AtomicBoolean marketReconnectScheduled = new AtomicBoolean();
+    private final AtomicBoolean publicReconnectScheduled = new AtomicBoolean();
+    private volatile boolean shuttingDown;
 
     public MultiPlexManager(MonitorService monitorService,
                             MonitorEventPublisher monitorEventPublisher,
@@ -62,11 +75,13 @@ public class MultiPlexManager {
     @PostConstruct
     public void init() {
         connect();
-        watchdogExecutor.scheduleAtFixedRate(this::sendPing, 15, 15, TimeUnit.SECONDS);
     }
 
     @PreDestroy
     public void shutdown() {
+        shuttingDown = true;
+        cancelMarketPingTask();
+        cancelPublicPingTask();
         if (connection != null && !connection.isDisposed()) {
             connection.dispose();
         }
@@ -77,52 +92,84 @@ public class MultiPlexManager {
     }
 
     private void connect() {
+        if (shuttingDown || !marketConnecting.compareAndSet(false, true)) {
+            log.info("market reconnect skipped: already reconnecting");
+            return;
+        }
         lastMessageAt.set(Instant.now());
         this.connection = HttpClient.create()
                 .websocket()
                 .uri(MARKET_WS_URL)
                 .handle((in, out) -> {
+                    in.withConnection(channel -> this.marketChannel = channel);
                     this.outbound = out;
+                    marketConnecting.set(false);
+                    marketReconnectScheduled.set(false);
+                    startMarketPingTask();
                     resendSubscriptions();
 
                     return in.receive()
                             .asString()
                             .doOnNext(this::handleMessage)
-                            .doFinally(signalType -> this.outbound = null)
+                            .doFinally(this::handleMarketConnectionClosed)
                             .then();
                 })
-                .retryWhen(reactor.util.retry.Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1))
-                        .maxBackoff(Duration.ofSeconds(30))
-                        .doBeforeRetry(signal -> log.warn("binance multiplex reconnect attempt={}", signal.totalRetriesInARow() + 1)))
-                .subscribe();
+                .subscribe(
+                        ignored -> { },
+                        error -> {
+                            marketConnecting.set(false);
+                            log.warn("binance market websocket connection failed", error);
+                            requestMarketReconnect("connection failed");
+                        },
+                        () -> {
+                            marketConnecting.set(false);
+                            requestMarketReconnect("connection completed");
+                        }
+                );
     }
 
     private void connectPublic() {
+        if (shuttingDown || publicSubscriptions.isEmpty()) {
+            return;
+        }
+        if (!publicConnecting.compareAndSet(false, true)) {
+            log.info("public reconnect skipped: already reconnecting");
+            return;
+        }
         lastMessageAt.set(Instant.now());
         this.publicConnection = HttpClient.create()
                 .websocket()
                 .uri(PUBLIC_WS_URL)
                 .handle((in, out) -> {
+                    in.withConnection(channel -> this.publicChannel = channel);
                     this.publicOutbound = out;
+                    publicConnecting.set(false);
+                    publicReconnectScheduled.set(false);
+                    startPublicPingTask();
                     resendPublicSubscriptions();
 
                     return in.receive()
                             .asString()
                             .doOnNext(this::handleMessage)
-                            .doFinally(signalType -> this.publicOutbound = null)
+                            .doFinally(this::handlePublicConnectionClosed)
                             .then();
                 })
-                .retryWhen(reactor.util.retry.Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1))
-                        .maxBackoff(Duration.ofSeconds(30))
-                        .doBeforeRetry(signal -> log.warn("binance public multiplex reconnect attempt={}", signal.totalRetriesInARow() + 1)))
-                .subscribe();
+                .subscribe(
+                        ignored -> { },
+                        error -> {
+                            publicConnecting.set(false);
+                            log.warn("binance public websocket connection failed", error);
+                            requestPublicReconnect("connection failed");
+                        },
+                        () -> {
+                            publicConnecting.set(false);
+                            requestPublicReconnect("connection completed");
+                        }
+                );
     }
 
     private void reconnect() {
-        if (connection != null && !connection.isDisposed()) {
-            connection.dispose();
-        }
-        connect();
+        requestMarketReconnect("reconnect requested");
     }
 
     //구독
@@ -212,15 +259,31 @@ public class MultiPlexManager {
     }
 
     private void sendMessage(String msg) {
-        if (outbound != null) {
-            outbound.sendString(Mono.just(msg)).then().subscribe();
+        if (!isActive(connection, marketChannel, outbound)) {
+            log.debug("market message skipped: connection not active");
+            return;
         }
+        outbound.sendString(Mono.just(msg)).then().subscribe(
+                ignored -> { },
+                error -> {
+                    log.warn("market websocket message failed", error);
+                    requestMarketReconnect("message failed");
+                }
+        );
     }
 
     private void sendPublicMessage(String msg) {
-        if (publicOutbound != null) {
-            publicOutbound.sendString(Mono.just(msg)).then().subscribe();
+        if (!isActive(publicConnection, publicChannel, publicOutbound)) {
+            log.debug("public message skipped: connection not active");
+            return;
         }
+        publicOutbound.sendString(Mono.just(msg)).then().subscribe(
+                ignored -> { },
+                error -> {
+                    log.warn("public websocket message failed", error);
+                    requestPublicReconnect("message failed");
+                }
+        );
     }
 
     private void ensurePublicConnection() {
@@ -229,21 +292,175 @@ public class MultiPlexManager {
         }
     }
 
-    private void sendPing() {
+    private void sendMarketPing() {
+        if (subscriptions.isEmpty()) {
+            return;
+        }
+        if (!isActive(connection, marketChannel, outbound)) {
+            log.info("ping skipped: market connection not active");
+            requestMarketReconnect("ping found inactive connection");
+            return;
+        }
+        outbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
+                .then()
+                .subscribe(
+                        ignored -> { },
+                        error -> {
+                            log.warn("market websocket ping failed", error);
+                            requestMarketReconnect("ping failed");
+                        },
+                        () -> log.debug("market websocket ping success")
+                );
+    }
+
+    private void sendPublicPing() {
+        if (publicSubscriptions.isEmpty()) {
+            return;
+        }
+        if (!isActive(publicConnection, publicChannel, publicOutbound)) {
+            log.info("ping skipped: public connection not active");
+            requestPublicReconnect("ping found inactive connection");
+            return;
+        }
+        publicOutbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
+                .then()
+                .subscribe(
+                        ignored -> { },
+                        error -> {
+                            log.warn("public websocket ping failed", error);
+                            requestPublicReconnect("ping failed");
+                        },
+                        () -> log.debug("public websocket ping success")
+                );
+    }
+
+    private boolean isActive(Disposable socketConnection, Connection channel, WebsocketOutbound socketOutbound) {
+        return !shuttingDown
+                && socketConnection != null
+                && !socketConnection.isDisposed()
+                && socketOutbound != null
+                && channel != null
+                && !channel.isDisposed()
+                && channel.channel().isActive();
+    }
+
+    private void startMarketPingTask() {
+        cancelMarketPingTask();
+        if (shuttingDown) {
+            return;
+        }
         try {
-            if (outbound != null && !subscriptions.isEmpty()) {
-                outbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
-                        .then()
-                        .subscribe();
+            marketPingTask = watchdogExecutor.scheduleAtFixedRate(
+                    this::sendMarketPing, HEARTBEAT_INTERVAL.toSeconds(), HEARTBEAT_INTERVAL.toSeconds(), TimeUnit.SECONDS);
+            log.info("market ping task started");
+        } catch (RejectedExecutionException error) {
+            if (!shuttingDown) {
+                log.error("market ping task start failed", error);
             }
-            if (publicOutbound != null && !publicSubscriptions.isEmpty()) {
-                publicOutbound.sendObject(Mono.just(new PingWebSocketFrame(Unpooled.wrappedBuffer(new byte[]{1}))))
-                        .then()
-                        .subscribe();
+        }
+    }
+
+    private void startPublicPingTask() {
+        cancelPublicPingTask();
+        if (shuttingDown) {
+            return;
+        }
+        try {
+            publicPingTask = watchdogExecutor.scheduleAtFixedRate(
+                    this::sendPublicPing, HEARTBEAT_INTERVAL.toSeconds(), HEARTBEAT_INTERVAL.toSeconds(), TimeUnit.SECONDS);
+            log.info("public ping task started");
+        } catch (RejectedExecutionException error) {
+            if (!shuttingDown) {
+                log.error("public ping task start failed", error);
             }
-        } catch (Exception e) {
-            log.warn("binance multiplex ping failed, reconnect", e);
-            reconnect();
+        }
+    }
+
+    private void cancelMarketPingTask() {
+        ScheduledFuture<?> task = marketPingTask;
+        marketPingTask = null;
+        if (task != null && !task.isDone()) {
+            task.cancel(false);
+            log.info("market ping task canceled");
+        }
+    }
+
+    private void cancelPublicPingTask() {
+        ScheduledFuture<?> task = publicPingTask;
+        publicPingTask = null;
+        if (task != null && !task.isDone()) {
+            task.cancel(false);
+            log.info("public ping task canceled");
+        }
+    }
+
+    private void handleMarketConnectionClosed(reactor.core.publisher.SignalType signalType) {
+        outbound = null;
+        marketChannel = null;
+        cancelMarketPingTask();
+        requestMarketReconnect("connection closed signal=" + signalType);
+    }
+
+    private void handlePublicConnectionClosed(reactor.core.publisher.SignalType signalType) {
+        publicOutbound = null;
+        publicChannel = null;
+        cancelPublicPingTask();
+        if (!publicSubscriptions.isEmpty()) {
+            requestPublicReconnect("connection closed signal=" + signalType);
+        }
+    }
+
+    private void requestMarketReconnect(String reason) {
+        if (shuttingDown) {
+            return;
+        }
+        if (!marketReconnectScheduled.compareAndSet(false, true)) {
+            log.info("market reconnect skipped: already reconnecting");
+            return;
+        }
+        log.warn("market reconnect requested reason={}", reason);
+        cancelMarketPingTask();
+        dispose(connection);
+        try {
+            watchdogExecutor.schedule(() -> {
+                marketReconnectScheduled.set(false);
+                connect();
+            }, 1, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException error) {
+            marketReconnectScheduled.set(false);
+            if (!shuttingDown) {
+                log.error("market reconnect scheduling failed", error);
+            }
+        }
+    }
+
+    private void requestPublicReconnect(String reason) {
+        if (shuttingDown || publicSubscriptions.isEmpty()) {
+            return;
+        }
+        if (!publicReconnectScheduled.compareAndSet(false, true)) {
+            log.info("public reconnect skipped: already reconnecting");
+            return;
+        }
+        log.warn("public reconnect requested reason={}", reason);
+        cancelPublicPingTask();
+        dispose(publicConnection);
+        try {
+            watchdogExecutor.schedule(() -> {
+                publicReconnectScheduled.set(false);
+                connectPublic();
+            }, 1, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException error) {
+            publicReconnectScheduled.set(false);
+            if (!shuttingDown) {
+                log.error("public reconnect scheduling failed", error);
+            }
+        }
+    }
+
+    private void dispose(Disposable disposable) {
+        if (disposable != null && !disposable.isDisposed()) {
+            disposable.dispose();
         }
     }
 
