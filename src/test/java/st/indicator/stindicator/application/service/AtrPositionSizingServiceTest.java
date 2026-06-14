@@ -1,8 +1,8 @@
 package st.indicator.stindicator.application.service;
 
-import com.java.candle.Candle;
 import org.junit.jupiter.api.Test;
 import st.indicator.stindicator.application.dto.AtrOrderPreview;
+import st.indicator.stindicator.domain.utils.candle.Candle;
 
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AtrPositionSizingServiceTest {
@@ -36,6 +37,72 @@ class AtrPositionSizingServiceTest {
         assertEquals(new BigDecimal("10.00000000"), preview.getRiskAmount());
         assertEquals(new BigDecimal("2.50000000"), preview.getQuantity());
         assertEquals(new BigDecimal("25.00000000"), preview.getRequiredMargin());
+    }
+
+    @Test
+    void previewUsesShortDirectionForSell() {
+        AtrOrderPreview preview = service.preview(
+                "ETHUSDT",
+                "SELL",
+                "4h",
+                14,
+                new BigDecimal("500"),
+                new BigDecimal("100"),
+                new BigDecimal("5"),
+                new BigDecimal("2"),
+                new BigDecimal("1.5"),
+                new BigDecimal("5")
+        );
+
+        assertEquals(new BigDecimal("10.00000000"), preview.getRiskAmount());
+        assertEquals(new BigDecimal("1.33333333"), preview.getQuantity());
+        assertEquals(new BigDecimal("26.66666660"), preview.getRequiredMargin());
+        assertEquals(new BigDecimal("107.5"), preview.getStopPrice());
+        assertEquals(new BigDecimal("92.5"), preview.getTargetPrice());
+    }
+
+    @Test
+    void calculateAtrFailsWhenCandleCountIsInsufficient() {
+        assertThrows(IllegalArgumentException.class, () -> service.calculateAtr(new ArrayList<>(), 14));
+    }
+
+    @Test
+    void previewMarksOrderBlockedWhenRequiredMarginExceedsAvailableBalance() {
+        AtrOrderPreview preview = service.preview(
+                "BTCUSDT",
+                "BUY",
+                "4h",
+                14,
+                new BigDecimal("100"),
+                new BigDecimal("60000"),
+                new BigDecimal("100"),
+                new BigDecimal("10"),
+                BigDecimal.ONE,
+                BigDecimal.ONE
+        );
+
+        assertTrue(preview.getRequiredMargin().compareTo(preview.getAvailableBalance()) > 0);
+        assertEquals(preview.getRequiredMargin().subtract(preview.getAvailableBalance()), preview.getShortage());
+        assertEquals(false, preview.isOrderable());
+    }
+
+    @Test
+    void previewMarksOrderableWhenAvailableBalanceCoversMargin() {
+        AtrOrderPreview preview = service.preview(
+                "BTCUSDT",
+                "BUY",
+                "4h",
+                14,
+                new BigDecimal("1000"),
+                new BigDecimal("100"),
+                new BigDecimal("10"),
+                BigDecimal.ONE,
+                BigDecimal.ONE,
+                new BigDecimal("5")
+        );
+
+        assertEquals(BigDecimal.ZERO, preview.getShortage());
+        assertTrue(preview.isOrderable());
     }
 
     private List<Candle> candles() throws Exception {
