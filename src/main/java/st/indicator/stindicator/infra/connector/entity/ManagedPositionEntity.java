@@ -174,6 +174,81 @@ public class ManagedPositionEntity {
         }
     }
 
+    public void updateTriggerBasis(TriggerBasis requestedStopBasis, TriggerBasis requestedTakeProfitBasis) {
+        if (entryPrice == null || entryPrice.signum() <= 0
+                || quantity == null || quantity.signum() <= 0
+                || requiredMargin == null || requiredMargin.signum() <= 0) {
+            throw new IllegalStateException("체결 기준 가격, 수량, 필요 증거금이 없어 트리거 기준을 변경할 수 없습니다.");
+        }
+
+        TriggerBasis previousStopBasis = getStopTriggerBasis();
+        TriggerBasis previousTakeProfitBasis = getTakeProfitTriggerBasis();
+        BigDecimal previousStopPrice = currentStopPrice;
+        BigDecimal previousTargetPrice = targetPrice;
+        boolean longSide = "BUY".equalsIgnoreCase(entrySide);
+        BigDecimal riskRate = valueOrDefault(riskPercent, BigDecimal.ONE)
+                .divide(new BigDecimal("100"), 18, RoundingMode.HALF_UP);
+        BigDecimal referenceStopPrice = initialStopPrice == null ? currentStopPrice : initialStopPrice;
+        if ((atr == null || atr.signum() <= 0 || atrMultiplier == null || atrMultiplier.signum() <= 0)
+                && referenceStopPrice == null) {
+            throw new IllegalStateException("ATR 또는 기존 손절가가 없어 트리거 기준을 변경할 수 없습니다.");
+        }
+        BigDecimal atrDistance = atr != null && atr.signum() > 0
+                && atrMultiplier != null && atrMultiplier.signum() > 0
+                ? atr.multiply(atrMultiplier)
+                : entryPrice.subtract(referenceStopPrice).abs();
+
+        if (requestedStopBasis != null) {
+            stopTriggerBasis = requestedStopBasis;
+            BigDecimal recalculatedStop;
+            if (requestedStopBasis == TriggerBasis.PNL_PERCENT) {
+                possibleLoss = requiredMargin.multiply(riskRate);
+                BigDecimal priceMove = possibleLoss.divide(quantity, 18, RoundingMode.HALF_UP);
+                recalculatedStop = longSide ? entryPrice.subtract(priceMove) : entryPrice.add(priceMove);
+            } else {
+                possibleLoss = atrDistance.multiply(quantity);
+                recalculatedStop = longSide ? entryPrice.subtract(atrDistance) : entryPrice.add(atrDistance);
+            }
+            currentStopPrice = preserveRaisedStop(recalculatedStop, longSide);
+        }
+
+        if (getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
+            takeProfitTriggerBasis = null;
+            targetPrice = null;
+            possibleProfit = null;
+        } else if (requestedTakeProfitBasis != null) {
+            takeProfitTriggerBasis = requestedTakeProfitBasis;
+            if (requestedTakeProfitBasis == TriggerBasis.PNL_PERCENT) {
+                possibleProfit = requiredMargin.multiply(riskRate);
+                BigDecimal priceMove = possibleProfit.divide(quantity, 18, RoundingMode.HALF_UP);
+                targetPrice = longSide ? entryPrice.add(priceMove) : entryPrice.subtract(priceMove);
+            } else {
+                possibleProfit = atrDistance.multiply(quantity);
+                targetPrice = longSide ? entryPrice.add(atrDistance) : entryPrice.subtract(atrDistance);
+            }
+        }
+
+        appendEvent("TRIGGER_BASIS_UPDATED previousStopBasis=" + previousStopBasis
+                + ", stopBasis=" + getStopTriggerBasis()
+                + ", previousTakeProfitBasis=" + previousTakeProfitBasis
+                + ", takeProfitBasis=" + getTakeProfitTriggerBasis()
+                + ", previousStopPrice=" + previousStopPrice
+                + ", currentStopPrice=" + currentStopPrice
+                + ", previousTargetPrice=" + previousTargetPrice
+                + ", targetPrice=" + targetPrice);
+        updatedAt = LocalDateTime.now();
+    }
+
+    private BigDecimal preserveRaisedStop(BigDecimal recalculatedStop, boolean longSide) {
+        if (getMode() != ManagedOrderMode.RAISING_STOP_ONLY || !raiseActivated || currentStopPrice == null) {
+            return recalculatedStop;
+        }
+        if (longSide) {
+            return currentStopPrice.max(recalculatedStop);
+        }
+        return currentStopPrice.min(recalculatedStop);
+    }
+
     private static BigDecimal calculateRequiredMargin(BigDecimal entryPrice, BigDecimal quantity, BigDecimal leverage) {
         if (entryPrice == null || quantity == null || leverage == null || leverage.signum() <= 0) {
             return BigDecimal.ZERO;
@@ -270,6 +345,14 @@ public class ManagedPositionEntity {
     public void markFailed() {
         this.status = ManagedPositionStatus.FAILED;
         appendEvent("ERROR status=FAILED, reason=" + this.closeReason);
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void restoreActiveAfterCloseFailure(String message) {
+        appendEvent("CLOSE_ORDER_FAILED message=" + message);
+        this.status = ManagedPositionStatus.ACTIVE;
+        this.closeOrderId = null;
+        this.closeReason = null;
         this.updatedAt = LocalDateTime.now();
     }
 

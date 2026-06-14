@@ -13,6 +13,7 @@ import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseD
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedStopHistoryResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
+import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 
 import java.util.List;
@@ -65,6 +66,17 @@ public interface ManagedTradeApi {
     @GetMapping("/managed-positions/{id}")
     ManagedPositionResponseDto position(@PathVariable Long id,
                                         @Parameter(hidden = true) HttpSession session);
+
+    @Operation(
+            summary = "관리 포지션 SL/TP 기준 변경",
+            description = "진입 완료된 ACTIVE 포지션의 전략 모드는 유지하고 현재가 기준과 투입금 손익 기준만 재설정합니다."
+    )
+    @PatchMapping("/managed-positions/{id}/trigger-basis")
+    ManagedPositionResponseDto updatePositionTriggerBasis(
+            @PathVariable Long id,
+            @RequestBody UpdateManagedPositionTriggerBasisRequestDto request,
+            @Parameter(hidden = true) HttpSession session
+    );
 
     @Operation(summary = "손절선 변경 이력 조회", description = "관리 포지션의 손절선이 실제 변경된 시점과 계산 근거를 최근 순으로 조회합니다.")
     @GetMapping("/managed-positions/{id}/stop-history")
