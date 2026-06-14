@@ -273,6 +273,14 @@ public class ManagedPositionEntity {
         this.updatedAt = LocalDateTime.now();
     }
 
+    public void restoreActiveAfterCloseFailure(String message) {
+        appendEvent("CLOSE_ORDER_FAILED message=" + message);
+        this.status = ManagedPositionStatus.ACTIVE;
+        this.closeOrderId = null;
+        this.closeReason = null;
+        this.updatedAt = LocalDateTime.now();
+    }
+
     public Long getId() { return id; }
     public Long getUserId() { return userId; }
     public String getSymbol() { return symbol; }

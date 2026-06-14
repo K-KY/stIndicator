@@ -134,6 +134,10 @@ public class ManagedTradeService {
         );
         AtrOrderPreview preview = clientService.previewAtrOrder(command);
         boolean testOrder = request.getExecutionMode() == TradeExecutionMode.TEST;
+        ManagedTradeRiskPolicy.requireSufficientBalance(preview);
+        log.info("managed ATR margin validated symbol={}, executionMode={}, availableBalance={}, requiredMargin={}, shortage={}, orderable={}",
+                preview.getSymbol(), request.getExecutionMode(), preview.getAvailableBalance(),
+                preview.getRequiredMargin(), preview.getShortage(), preview.isOrderable());
         Order order = testOrder
                 ? testEntryOrder(preview)
                 : placeRealEntryOrder(request, preview);
@@ -520,16 +524,31 @@ public class ManagedTradeService {
     }
 
     private void evaluatePositionOnce(ManagedPositionEntity position, BigDecimal currentPrice) {
-        if (position == null
-                || position.getId() == null
-                || closingPositionIds.contains(position.getId())
-                || !evaluatingPositionIds.add(position.getId())) {
+        if (position == null || position.getId() == null) {
+            log.debug("managed close skipped positionId={}, closeSkippedReason=POSITION_NOT_ACTIVE",
+                    position == null ? null : position.getId());
+            return;
+        }
+        if (closingPositionIds.contains(position.getId())) {
+            log.debug("managed close skipped positionId={}, symbol={}, closeSkippedReason=ALREADY_CLOSING",
+                    position.getId(), position.getSymbol());
+            return;
+        }
+        if (!evaluatingPositionIds.add(position.getId())) {
+            log.debug("managed close skipped positionId={}, symbol={}, closeSkippedReason=EVALUATION_IN_PROGRESS",
+                    position.getId(), position.getSymbol());
             return;
         }
         try {
             ManagedPositionEntity latest = managedPositionRepository.findById(position.getId()).orElse(null);
-            if (latest == null || latest.getStatus() != ManagedPositionStatus.ACTIVE
-                    || closingPositionIds.contains(latest.getId())) {
+            if (latest == null || latest.getStatus() != ManagedPositionStatus.ACTIVE) {
+                log.debug("managed close skipped positionId={}, symbol={}, status={}, closeSkippedReason=POSITION_NOT_ACTIVE",
+                        position.getId(), position.getSymbol(), latest == null ? null : latest.getStatus());
+                return;
+            }
+            if (closingPositionIds.contains(latest.getId())) {
+                log.debug("managed close skipped positionId={}, symbol={}, closeSkippedReason=ALREADY_CLOSING",
+                        latest.getId(), latest.getSymbol());
                 return;
             }
             evaluatePosition(latest, currentPrice);
@@ -635,6 +654,7 @@ public class ManagedTradeService {
             position = position(position.getId());
         }
         BigDecimal pnl = calculatePnl(position, currentPrice);
+        BigDecimal marginPnlPercent = ManagedTradeRiskPolicy.marginPnlPercent(pnl, position.getRequiredMargin());
         BigDecimal highest = max(position.getHighestPrice(), currentPrice);
         BigDecimal lowest = min(position.getLowestPrice(), currentPrice);
         BigDecimal nextStop = position.getCurrentStopPrice();
@@ -698,6 +718,15 @@ public class ManagedTradeService {
         monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
         logRaiseStopEvaluation(position, currentPrice, pnl, raisePlan, nextStop,
                 triggerReached, stopUpdateApplied, stopUpdateRejectedReason);
+        boolean stopConditionMatched = reason == ManagedPositionCloseReason.STOP_PRICE_REACHED
+                || reason == ManagedPositionCloseReason.POSSIBLE_LOSS_REACHED
+                || reason == ManagedPositionCloseReason.RAISING_STOP_REACHED;
+        String closeSkippedReason = reason == null ? closeSkipReason(position) : null;
+        log.debug("managed position evaluated positionId={}, symbol={}, side={}, triggerBasis={}, entryPrice={}, currentPrice={}, quantity={}, requiredMargin={}, leverage={}, unrealizedPnl={}, marginPnlPercent={}, stopPercent={}, possibleLoss={}, currentStopPrice={}, stopConditionMatched={}, closeRequested={}, closeSkippedReason={}",
+                position.getId(), position.getSymbol(), position.getEntrySide(), position.getStopTriggerBasis(),
+                position.getEntryPrice(), currentPrice, position.getQuantity(), position.getRequiredMargin(),
+                position.getLeverage(), pnl, marginPnlPercent, position.getRiskPercent(),
+                position.getPossibleLoss(), nextStop, stopConditionMatched, reason != null, closeSkippedReason);
         if (reason != null) {
             position.appendEvent("CLOSE_CONDITION_REACHED reason=" + reason + ", price=" + currentPrice
                     + ", stop=" + nextStop + ", pnl=" + pnl);
@@ -778,7 +807,12 @@ public class ManagedTradeService {
 
     private ManagedPositionCloseReason fixedCloseReason(ManagedPositionEntity position, BigDecimal price, BigDecimal pnl) {
         if (position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT) {
-            if (position.getPossibleLoss() != null && pnl.compareTo(position.getPossibleLoss().negate()) <= 0) {
+            if (ManagedTradeRiskPolicy.pnlStopMatched(
+                    pnl,
+                    position.getRequiredMargin(),
+                    position.getRiskPercent(),
+                    position.getPossibleLoss()
+            )) {
                 return ManagedPositionCloseReason.POSSIBLE_LOSS_REACHED;
             }
         } else if (isLong(position)) {
@@ -804,16 +838,22 @@ public class ManagedTradeService {
     private ManagedPositionCloseReason raisingCloseReason(ManagedPositionEntity position, BigDecimal price,
                                                           BigDecimal pnl, BigDecimal stop, boolean activated) {
         if (position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT) {
-            if (!activated && (position.getPossibleLoss() == null || position.getPossibleLoss().signum() <= 0)) {
+            if (!activated && (position.getRequiredMargin() == null || position.getRequiredMargin().signum() <= 0
+                    || position.getQuantity() == null || position.getQuantity().signum() <= 0)) {
                 log.error("managed close evaluation skipped because possibleLoss is invalid id={}, symbol={}, possibleLoss={}, requiredMargin={}, quantity={}",
                         position.getId(), position.getSymbol(), position.getPossibleLoss(),
                         position.getRequiredMargin(), position.getQuantity());
                 return null;
             }
-            BigDecimal stopPnlLine = activated
-                    ? calculatePnl(position, stop)
-                    : position.getPossibleLoss().negate();
-            if (pnl.compareTo(stopPnlLine) <= 0) {
+            boolean matched = activated
+                    ? pnl.compareTo(calculatePnl(position, stop)) <= 0
+                    : ManagedTradeRiskPolicy.pnlStopMatched(
+                            pnl,
+                            position.getRequiredMargin(),
+                            position.getRiskPercent(),
+                            position.getPossibleLoss()
+                    );
+            if (matched) {
                 return activated ? ManagedPositionCloseReason.RAISING_STOP_REACHED : ManagedPositionCloseReason.POSSIBLE_LOSS_REACHED;
             }
             return null;
@@ -828,7 +868,14 @@ public class ManagedTradeService {
     }
 
     private void closePosition(ManagedPositionEntity position, ManagedPositionCloseReason reason) {
-        if (position.getStatus() != ManagedPositionStatus.ACTIVE || !closingPositionIds.add(position.getId())) {
+        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+            log.info("managed close skipped positionId={}, symbol={}, status={}, closeSkippedReason=POSITION_NOT_ACTIVE",
+                    position.getId(), position.getSymbol(), position.getStatus());
+            return;
+        }
+        if (!closingPositionIds.add(position.getId())) {
+            log.info("managed close skipped positionId={}, symbol={}, closeSkippedReason=ALREADY_CLOSING",
+                    position.getId(), position.getSymbol());
             return;
         }
         if (position.isTestOrder()) {
@@ -855,12 +902,30 @@ public class ManagedTradeService {
             managedPositionRepository.save(position);
             monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
         } catch (RuntimeException e) {
-            position.markFailed();
+            position.restoreActiveAfterCloseFailure(e.getMessage());
             closingPositionIds.remove(position.getId());
             managedPositionRepository.save(position);
             monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+            log.error("managed close failed positionId={}, symbol={}, closeSkippedReason=ORDER_FAILED",
+                    position.getId(), position.getSymbol(), e);
             throw e;
         }
+    }
+
+    private String closeSkipReason(ManagedPositionEntity position) {
+        if (position.getStatus() == ManagedPositionStatus.CLOSING || closingPositionIds.contains(position.getId())) {
+            return "ALREADY_CLOSING";
+        }
+        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+            return "POSITION_NOT_ACTIVE";
+        }
+        if (position.getRequiredMargin() == null || position.getRequiredMargin().signum() <= 0) {
+            return "INVALID_MARGIN";
+        }
+        if (position.getQuantity() == null || position.getQuantity().signum() <= 0) {
+            return "INVALID_QUANTITY";
+        }
+        return "CONDITION_NOT_MATCHED";
     }
 
     private Map<String, String> closeCurrentPriceParams(ManagedPositionEntity position) {

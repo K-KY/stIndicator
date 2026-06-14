@@ -35,6 +35,10 @@ public class AtrOrderPreview {
     private final BigDecimal notional;
     // 레버리지 적용 후 실제로 필요한 예상 증거금
     private final BigDecimal requiredMargin;
+    // 필요 증거금이 가용 잔액을 초과한 금액
+    private final BigDecimal shortage;
+    // 현재 가용 잔액으로 주문을 생성할 수 있는지 여부
+    private final boolean orderable;
     // 방향 기준 손절 예상 가격
     private final BigDecimal stopPrice;
     // 현재 구현 기준 1R 대응 목표 가격
@@ -80,6 +84,8 @@ public class AtrOrderPreview {
         this.quantity = quantity;
         this.notional = notional;
         this.requiredMargin = requiredMargin;
+        this.shortage = calculateShortage(availableBalance, requiredMargin);
+        this.orderable = shortage.signum() == 0;
         this.stopPrice = stopPrice;
         this.targetPrice = targetPrice;
         this.possibleLoss = possibleLoss;
@@ -152,6 +158,14 @@ public class AtrOrderPreview {
         return requiredMargin;
     }
 
+    public BigDecimal getShortage() {
+        return shortage;
+    }
+
+    public boolean isOrderable() {
+        return orderable;
+    }
+
     public BigDecimal getStopPrice() {
         return stopPrice;
     }
@@ -190,5 +204,12 @@ public class AtrOrderPreview {
 
     public BigDecimal getMarginPnlPercentForTakeProfit() {
         return marginPnlPercentForTakeProfit;
+    }
+
+    private BigDecimal calculateShortage(BigDecimal available, BigDecimal required) {
+        if (available == null || required == null) {
+            return BigDecimal.ZERO;
+        }
+        return required.subtract(available).max(BigDecimal.ZERO);
     }
 }
