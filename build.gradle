@@ -16,16 +16,6 @@ java {
 
 repositories {
     mavenCentral()
-    maven {
-        name = "GitHubPackages"
-        url = uri("https://maven.pkg.github.com/K-KY/tredeTools")
-
-        credentials {
-            username = project.findProperty("gpr.user")
-            print(username)
-            password = project.findProperty("gpr.key")
-        }
-    }
 }
 
 dependencies {
