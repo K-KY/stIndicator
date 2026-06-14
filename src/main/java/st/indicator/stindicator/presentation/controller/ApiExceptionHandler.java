@@ -24,6 +24,14 @@ public class ApiExceptionHandler {
         ));
     }
 
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiValidationError> handleIllegalArgument(IllegalArgumentException exception) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiValidationError(
+                "INVALID_REQUEST",
+                exception.getMessage()
+        ));
+    }
+
     public record InsufficientBalanceError(
             String code,
             String message,
@@ -31,5 +39,8 @@ public class ApiExceptionHandler {
             BigDecimal requiredMargin,
             BigDecimal shortage
     ) {
+    }
+
+    public record ApiValidationError(String code, String message) {
     }
 }
