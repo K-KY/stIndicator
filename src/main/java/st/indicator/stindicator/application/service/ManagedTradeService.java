@@ -23,6 +23,7 @@ import st.indicator.stindicator.infra.ws.MultiPlexManager;
 import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
+import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 import st.indicator.stindicator.presentation.ws.publisher.OrderTradeUpdateEvent;
 import st.indicator.stindicator.presentation.ws.publisher.PriceTickEvent;
@@ -424,6 +425,40 @@ public class ManagedTradeService {
         ManagedPositionEntity position = position(id);
         assertOwner(position.getUserId(), userId);
         return position;
+    }
+
+    @Transactional
+    public ManagedPositionEntity updatePositionTriggerBasis(
+            Long userId,
+            Long id,
+            UpdateManagedPositionTriggerBasisRequestDto request
+    ) {
+        ManagedPositionEntity position = position(userId, id);
+        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+            throw new IllegalArgumentException("ACTIVE 상태의 관리 포지션만 트리거 기준을 변경할 수 있습니다.");
+        }
+        if (request == null) {
+            throw new IllegalArgumentException("변경할 트리거 기준이 필요합니다.");
+        }
+        boolean raisingStopOnly = position.getMode() == ManagedOrderMode.RAISING_STOP_ONLY;
+        if (request.getStopTriggerBasis() == null
+                && (raisingStopOnly || request.getTakeProfitTriggerBasis() == null)) {
+            throw new IllegalArgumentException("변경할 SL 또는 TP 트리거 기준이 필요합니다.");
+        }
+
+        TriggerBasis previousStopBasis = position.getStopTriggerBasis();
+        TriggerBasis previousTakeProfitBasis = position.getTakeProfitTriggerBasis();
+        position.updateTriggerBasis(
+                request.getStopTriggerBasis(),
+                raisingStopOnly ? null : request.getTakeProfitTriggerBasis()
+        );
+        ManagedPositionEntity saved = managedPositionRepository.save(position);
+        monitorService.pushPositionUpdate(saved.getUserId(), saved.getSymbol(), ManagedPositionResponseDto.from(saved));
+        log.info("managed position trigger basis updated id={}, symbol={}, mode={}, previousStopBasis={}, stopBasis={}, previousTakeProfitBasis={}, takeProfitBasis={}, currentStopPrice={}, targetPrice={}, possibleLoss={}, possibleProfit={}",
+                saved.getId(), saved.getSymbol(), saved.getMode(), previousStopBasis, saved.getStopTriggerBasis(),
+                previousTakeProfitBasis, saved.getTakeProfitTriggerBasis(), saved.getCurrentStopPrice(),
+                saved.getTargetPrice(), saved.getPossibleLoss(), saved.getPossibleProfit());
+        return saved;
     }
 
     @Transactional(readOnly = true)

@@ -15,6 +15,7 @@ import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseD
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedStopHistoryResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
+import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 
 import java.util.List;
@@ -82,6 +83,17 @@ public class ManagedTradeController implements ManagedTradeApi {
     @Override
     public ManagedPositionResponseDto position(Long id, HttpSession session) {
         return ManagedPositionResponseDto.from(managedTradeService.position(requireSessionUserId(session), id));
+    }
+
+    @Override
+    public ManagedPositionResponseDto updatePositionTriggerBasis(
+            Long id,
+            UpdateManagedPositionTriggerBasisRequestDto request,
+            HttpSession session
+    ) {
+        return ManagedPositionResponseDto.from(
+                managedTradeService.updatePositionTriggerBasis(requireSessionUserId(session), id, request)
+        );
     }
 
     @Override
