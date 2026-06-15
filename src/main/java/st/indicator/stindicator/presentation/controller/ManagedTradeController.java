@@ -9,6 +9,7 @@ import st.indicator.stindicator.application.service.ManagedTradeService;
 import st.indicator.stindicator.application.service.SessionUser;
 import st.indicator.stindicator.domain.entity.ManagedOrderMode;
 import st.indicator.stindicator.domain.entity.ManagedPositionCloseReason;
+import st.indicator.stindicator.presentation.dto.AddRaisingStopRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseDto;
@@ -16,6 +17,7 @@ import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedStopHistoryResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
+import st.indicator.stindicator.presentation.dto.UpdateManagedPositionModeRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 
 import java.util.List;
@@ -93,6 +95,20 @@ public class ManagedTradeController implements ManagedTradeApi {
     ) {
         return ManagedPositionResponseDto.from(
                 managedTradeService.updatePositionTriggerBasis(requireSessionUserId(session), id, request)
+        );
+    }
+
+    @Override
+    public ManagedPositionResponseDto addRaisingStop(Long id, AddRaisingStopRequestDto request, HttpSession session) {
+        return ManagedPositionResponseDto.from(
+                managedTradeService.addRaisingStop(requireSessionUserId(session), id, request)
+        );
+    }
+
+    @Override
+    public ManagedPositionResponseDto updatePositionMode(Long id, UpdateManagedPositionModeRequestDto request, HttpSession session) {
+        return ManagedPositionResponseDto.from(
+                managedTradeService.updatePositionMode(requireSessionUserId(session), id, request)
         );
     }
 

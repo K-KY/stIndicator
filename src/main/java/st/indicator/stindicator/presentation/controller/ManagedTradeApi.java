@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpSession;
 import org.springframework.web.bind.annotation.*;
 import st.indicator.stindicator.domain.entity.ManagedOrderMode;
 import st.indicator.stindicator.domain.entity.ManagedPositionCloseReason;
+import st.indicator.stindicator.presentation.dto.AddRaisingStopRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseDto;
@@ -14,6 +15,7 @@ import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedStopHistoryResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
+import st.indicator.stindicator.presentation.dto.UpdateManagedPositionModeRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
 
 import java.util.List;
@@ -75,6 +77,25 @@ public interface ManagedTradeApi {
     ManagedPositionResponseDto updatePositionTriggerBasis(
             @PathVariable Long id,
             @RequestBody UpdateManagedPositionTriggerBasisRequestDto request,
+            @Parameter(hidden = true) HttpSession session
+    );
+
+    @Operation(
+            summary = "손절선 상승 모드 추가",
+            description = "ACTIVE 상태의 관리 포지션에 서비스 자체 손절선 상승 전략을 적용합니다."
+    )
+    @PostMapping("/managed-positions/{id}/raising-stop")
+    ManagedPositionResponseDto addRaisingStop(
+            @PathVariable Long id,
+            @RequestBody AddRaisingStopRequestDto request,
+            @Parameter(hidden = true) HttpSession session
+    );
+
+    @Operation(summary = "관리 포지션 전략 모드 변경", description = "ACTIVE 포지션의 FIXED_TP_SL / RAISING_STOP_ONLY 모드를 전환합니다.")
+    @PatchMapping("/managed-positions/{id}/mode")
+    ManagedPositionResponseDto updatePositionMode(
+            @PathVariable Long id,
+            @RequestBody UpdateManagedPositionModeRequestDto request,
             @Parameter(hidden = true) HttpSession session
     );
 

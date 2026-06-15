@@ -306,6 +306,141 @@ public class ManagedPositionEntity {
         updatedAt = LocalDateTime.now();
     }
 
+    public void addRaisingStop(TriggerBasis raiseTriggerBasis, BigDecimal raiseTriggerValue,
+                               RaiseStopType requestedRaiseStopType, BigDecimal requestedRaiseStopValue) {
+        ManagedOrderMode previousMode = getMode();
+        BigDecimal previousTargetPrice = targetPrice;
+        if (getStatus() != ManagedPositionStatus.ACTIVE) {
+            throw new IllegalStateException("ACTIVE 상태의 포지션만 손절선 상승 모드를 추가할 수 있습니다.");
+        }
+        if (raiseTriggerValue == null || raiseTriggerValue.signum() <= 0
+                || requestedRaiseStopType == null
+                || requestedRaiseStopValue == null
+                || requestedRaiseStopValue.signum() <= 0) {
+            throw new IllegalArgumentException("상승 트리거 값과 보호 설정은 0보다 커야 합니다.");
+        }
+        this.mode = ManagedOrderMode.RAISING_STOP_ONLY;
+        this.raiseStopEnabled = true;
+        this.stopTriggerBasis = raiseTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : raiseTriggerBasis;
+        this.takeProfitTriggerBasis = null;
+        this.targetPrice = null;
+        this.possibleProfit = null;
+        this.raiseTriggerType = RaiseStopType.PERCENT;
+        this.raiseTriggerValue = raiseTriggerValue;
+        this.raiseStopType = requestedRaiseStopType;
+        this.raiseStopValue = requestedRaiseStopValue;
+        this.raiseActivated = false;
+        appendEvent("MODE_CHANGED previousMode=" + previousMode
+                + ", mode=" + this.mode
+                + ", currentPrice=" + currentPrice
+                + ", currentStopPrice=" + currentStopPrice
+                + ", previousTargetPrice=" + previousTargetPrice
+                + ", raiseTriggerBasis=" + this.stopTriggerBasis
+                + ", raiseTriggerType=" + this.raiseTriggerType
+                + ", raiseTriggerValue=" + this.raiseTriggerValue
+                + ", raiseStopType=" + this.raiseStopType
+                + ", raiseStopValue=" + this.raiseStopValue);
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void switchToFixedTpSl(TriggerBasis requestedStopBasis, RaiseStopType stopValueType, BigDecimal stopValue,
+                                  TriggerBasis requestedTakeProfitBasis, RaiseStopType takeProfitValueType,
+                                  BigDecimal takeProfitValue) {
+        ManagedOrderMode previousMode = getMode();
+        BigDecimal previousTargetPrice = targetPrice;
+        if (getStatus() != ManagedPositionStatus.ACTIVE) {
+            throw new IllegalStateException("ACTIVE 상태의 포지션만 고정 TP/SL 모드로 변경할 수 있습니다.");
+        }
+        this.mode = ManagedOrderMode.FIXED_TP_SL;
+        this.raiseStopEnabled = false;
+        this.raiseActivated = false;
+        this.raiseTriggerType = null;
+        this.raiseTriggerValue = null;
+        this.raiseStopType = null;
+        this.raiseStopValue = null;
+        if (stopValueType == null && stopValue == null && takeProfitValueType == null && takeProfitValue == null) {
+            updateTriggerBasis(
+                    requestedStopBasis == null ? getStopTriggerBasis() : requestedStopBasis,
+                    requestedTakeProfitBasis == null ? TriggerBasis.PRICE_PERCENT : requestedTakeProfitBasis
+            );
+        } else {
+            applyFixedTpSlSetting(
+                    requestedStopBasis == null ? getStopTriggerBasis() : requestedStopBasis,
+                    stopValueType,
+                    stopValue,
+                    requestedTakeProfitBasis == null ? TriggerBasis.PRICE_PERCENT : requestedTakeProfitBasis,
+                    takeProfitValueType,
+                    takeProfitValue
+            );
+        }
+        appendEvent("MODE_CHANGED previousMode=" + previousMode
+                + ", mode=" + this.mode
+                + ", currentPrice=" + currentPrice
+                + ", currentStopPrice=" + currentStopPrice
+                + ", previousTargetPrice=" + previousTargetPrice
+                + ", targetPrice=" + targetPrice
+                + ", stopBasis=" + getStopTriggerBasis()
+                + ", takeProfitBasis=" + getTakeProfitTriggerBasis()
+                + ", stopValueType=" + stopValueType
+                + ", stopValue=" + stopValue
+                + ", takeProfitValueType=" + takeProfitValueType
+                + ", takeProfitValue=" + takeProfitValue);
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    private void applyFixedTpSlSetting(TriggerBasis requestedStopBasis, RaiseStopType stopValueType, BigDecimal stopValue,
+                                       TriggerBasis requestedTakeProfitBasis, RaiseStopType takeProfitValueType,
+                                       BigDecimal takeProfitValue) {
+        if (entryPrice == null || entryPrice.signum() <= 0
+                || quantity == null || quantity.signum() <= 0
+                || requiredMargin == null || requiredMargin.signum() <= 0) {
+            throw new IllegalStateException("체결 기준 가격, 수량, 필요 증거금이 없어 고정 TP/SL을 설정할 수 없습니다.");
+        }
+        RaiseStopType normalizedStopType = stopValueType == null ? RaiseStopType.PERCENT : stopValueType;
+        RaiseStopType normalizedTakeProfitType = takeProfitValueType == null ? RaiseStopType.PERCENT : takeProfitValueType;
+        BigDecimal normalizedStopValue = positiveOrDefault(stopValue, valueOrDefault(riskPercent, BigDecimal.ONE));
+        BigDecimal normalizedTakeProfitValue = positiveOrDefault(takeProfitValue, valueOrDefault(riskPercent, BigDecimal.ONE));
+        boolean longSide = "BUY".equalsIgnoreCase(entrySide);
+
+        this.stopTriggerBasis = requestedStopBasis == null ? TriggerBasis.PRICE_PERCENT : requestedStopBasis;
+        FixedExitValue stop = fixedExitValue(this.stopTriggerBasis, normalizedStopType, normalizedStopValue);
+        this.possibleLoss = stop.amount();
+        this.currentStopPrice = longSide ? entryPrice.subtract(stop.priceMove()) : entryPrice.add(stop.priceMove());
+        this.initialStopPrice = this.currentStopPrice;
+
+        this.takeProfitTriggerBasis = requestedTakeProfitBasis == null ? TriggerBasis.PRICE_PERCENT : requestedTakeProfitBasis;
+        FixedExitValue target = fixedExitValue(this.takeProfitTriggerBasis, normalizedTakeProfitType, normalizedTakeProfitValue);
+        this.possibleProfit = target.amount();
+        this.targetPrice = longSide ? entryPrice.add(target.priceMove()) : entryPrice.subtract(target.priceMove());
+    }
+
+    private FixedExitValue fixedExitValue(TriggerBasis basis, RaiseStopType valueType, BigDecimal value) {
+        if (valueType == RaiseStopType.AMOUNT) {
+            BigDecimal amount = value.setScale(18, RoundingMode.HALF_UP);
+            return new FixedExitValue(amount.divide(quantity, 18, RoundingMode.HALF_UP), amount);
+        }
+        BigDecimal percent = value.divide(new BigDecimal("100"), 18, RoundingMode.HALF_UP);
+        if (basis == TriggerBasis.PNL_PERCENT) {
+            BigDecimal amount = requiredMargin.multiply(percent);
+            return new FixedExitValue(amount.divide(quantity, 18, RoundingMode.HALF_UP), amount);
+        }
+        BigDecimal priceMove = entryPrice.multiply(percent);
+        return new FixedExitValue(priceMove, priceMove.multiply(quantity));
+    }
+
+    private static BigDecimal positiveOrDefault(BigDecimal value, BigDecimal defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value.signum() <= 0) {
+            throw new IllegalArgumentException("고정 TP/SL 설정값은 0보다 커야 합니다.");
+        }
+        return value;
+    }
+
+    private record FixedExitValue(BigDecimal priceMove, BigDecimal amount) {
+    }
+
     private BigDecimal preserveRaisedStop(BigDecimal recalculatedStop, boolean longSide) {
         if (getMode() != ManagedOrderMode.RAISING_STOP_ONLY || !raiseActivated || currentStopPrice == null) {
             return recalculatedStop;
