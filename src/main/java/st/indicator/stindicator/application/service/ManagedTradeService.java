@@ -41,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Service
 public class ManagedTradeService {
     private static final Logger log = LoggerFactory.getLogger(ManagedTradeService.class);
+    private static final int MAX_UNMATCHED_ORDER_UPDATE_KEYS = 512;
     private final ClientService clientService;
     private final ExchangeConnector exchangeConnector;
     private final PendingOrderJpaRepository pendingOrderRepository;
@@ -50,10 +51,13 @@ public class ManagedTradeService {
     private final MultiPlexManager multiPlexManager;
     private final MonitorService monitorService;
     private final Set<Long> closingPositionIds = ConcurrentHashMap.newKeySet();
+    private final Set<Long> fillingPendingOrderIds = ConcurrentHashMap.newKeySet();
     private final Set<Long> fillingTestOrderIds = ConcurrentHashMap.newKeySet();
     private final Set<Long> evaluatingPositionIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> importingExternalPositionKeys = ConcurrentHashMap.newKeySet();
     private final Set<String> recordedStopUpdates = ConcurrentHashMap.newKeySet();
     private final Map<String, ManagedOrderSymbolRule> orderRuleCache = new ConcurrentHashMap<>();
+    private final Map<String, OrderTradeUpdateEvent> unmatchedOrderUpdates = new ConcurrentHashMap<>();
 
     public ManagedTradeService(ClientService clientService,
                                ExchangeConnector exchangeConnector,
@@ -179,8 +183,26 @@ public class ManagedTradeService {
         } else {
             log.info("managed real pending order created id={}, symbol={}, orderId={}, quantity={}, requiredMargin={}",
                     saved.getId(), saved.getSymbol(), saved.getOrderId(), saved.getQuantity(), saved.getRequiredMargin());
+            reconcileRealEntryOrder(saved.getId(), order);
         }
         return saved;
+    }
+
+    private void reconcileRealEntryOrder(Long pendingOrderId, Order order) {
+        PendingOrderEntity pending = pendingOrderRepository.findById(pendingOrderId).orElse(null);
+        if (pending == null || pending.getStatus() != PendingOrderStatus.PENDING || pending.isTestOrder()) {
+            return;
+        }
+        OrderTradeUpdateEvent buffered = removeBufferedOrderUpdate(pending);
+        if (buffered != null) {
+            log.info("replaying early Binance fill event pendingId={}, orderId={}, clientOrderId={}, status={}",
+                    pending.getId(), buffered.orderId(), buffered.clientOrderId(), buffered.orderStatus());
+            handlePendingOrderUpdate(pending, buffered);
+            return;
+        }
+        if (order != null && "FILLED".equalsIgnoreCase(order.getStatus())) {
+            fillPendingOrder(pending, order.getAvgPrice(), order.getExecutedQty(), "BINANCE_ORDER_RESPONSE");
+        }
     }
 
     private Order placeRealEntryOrder(ManagedAtrOrderRequestDto request, AtrOrderPreview preview) {
@@ -210,7 +232,44 @@ public class ManagedTradeService {
         List<PendingOrderEntity> pendingOrders = pendingOrderRepository.findAllByUserIdAndStatusOrderByCreatedAtDesc(userId, PendingOrderStatus.PENDING);
         pendingOrders.forEach(this::repairPendingSizingIfNeeded);
         pendingOrders.forEach(this::normalizePendingPolicyIfNeeded);
-        return pendingOrders;
+        pendingOrders.stream()
+                .filter(order -> !order.isTestOrder())
+                .forEach(this::reconcilePendingRealOrder);
+        return pendingOrderRepository.findAllByUserIdAndStatusOrderByCreatedAtDesc(userId, PendingOrderStatus.PENDING);
+    }
+
+    private void reconcilePendingRealOrder(PendingOrderEntity pending) {
+        if (pending == null
+                || pending.isTestOrder()
+                || pending.getStatus() != PendingOrderStatus.PENDING
+                || isBlank(pending.getOrderId())) {
+            return;
+        }
+        try {
+            Order exchangeOrder = clientService.getOrderDetail(pending.getSymbol(), pending.getOrderId());
+            if (exchangeOrder == null) {
+                return;
+            }
+            if ("FILLED".equalsIgnoreCase(exchangeOrder.getStatus())) {
+                log.warn("recovering filled Binance order missing managed position pendingId={}, symbol={}, orderId={}",
+                        pending.getId(), pending.getSymbol(), pending.getOrderId());
+                fillPendingOrder(pending, exchangeOrder.getAvgPrice(), exchangeOrder.getExecutedQty(), "BINANCE_ORDER_RECONCILIATION");
+                return;
+            }
+            if ("CANCELED".equalsIgnoreCase(exchangeOrder.getStatus())) {
+                pending.mark(PendingOrderStatus.CANCELED);
+                pendingOrderRepository.save(pending);
+                return;
+            }
+            if ("EXPIRED".equalsIgnoreCase(exchangeOrder.getStatus())
+                    || "EXPIRED_IN_MATCH".equalsIgnoreCase(exchangeOrder.getStatus())) {
+                pending.mark(PendingOrderStatus.EXPIRED);
+                pendingOrderRepository.save(pending);
+            }
+        } catch (RuntimeException error) {
+            log.warn("managed pending order reconciliation failed pendingId={}, symbol={}, orderId={}",
+                    pending.getId(), pending.getSymbol(), pending.getOrderId(), error);
+        }
     }
 
     @Transactional
@@ -398,8 +457,56 @@ public class ManagedTradeService {
         return value != null && value.signum() > 0;
     }
 
+    @Transactional
     public List<ManagedPositionEntity> activePositions(Long userId) {
+        importUnmanagedExchangePositions(userId);
         return managedPositionRepository.findAllByUserIdAndStatusOrderByOpenedAtDesc(userId, ManagedPositionStatus.ACTIVE);
+    }
+
+    private void importUnmanagedExchangePositions(Long userId) {
+        List<PositionRisk> exchangePositions;
+        try {
+            exchangePositions = clientService.getPositions();
+        } catch (RuntimeException error) {
+            log.warn("unmanaged Binance position import skipped userId={}", userId, error);
+            return;
+        }
+        exchangePositions.stream()
+                .filter(position -> position.getPositionAmt() != null && position.getPositionAmt().signum() != 0)
+                .forEach(position -> importUnmanagedExchangePosition(userId, position));
+    }
+
+    private void importUnmanagedExchangePosition(Long userId, PositionRisk exchangePosition) {
+        if (exchangePosition.getSymbol() == null || exchangePosition.getSymbol().isBlank()) {
+            return;
+        }
+        String symbol = exchangePosition.getSymbol().toUpperCase(Locale.ROOT);
+        String importKey = userId + ":" + symbol;
+        if (!importingExternalPositionKeys.add(importKey)) {
+            return;
+        }
+        try {
+            boolean alreadyManaged = managedPositionRepository.existsByUserIdAndSymbolAndStatusInAndExecutionMode(
+                    userId,
+                    symbol,
+                    List.of(ManagedPositionStatus.ACTIVE, ManagedPositionStatus.CLOSING),
+                    TradeExecutionMode.REAL
+            );
+            if (alreadyManaged) {
+                return;
+            }
+            ManagedPositionEntity imported = managedPositionRepository.save(
+                    ManagedPositionEntity.fromExternalPosition(userId, exchangePosition)
+            );
+            multiPlexManager.subscribeMarkPrice(imported.getSymbol());
+            monitorService.pushPositionUpdate(imported.getUserId(), imported.getSymbol(), ManagedPositionResponseDto.from(imported));
+            log.warn("unmanaged Binance position imported id={}, userId={}, symbol={}, side={}, entryPrice={}, currentPrice={}, quantity={}, leverage={}, mode={}, raiseTrigger={}%, raiseProtection={}%",
+                    imported.getId(), userId, imported.getSymbol(), imported.getEntrySide(),
+                    imported.getEntryPrice(), imported.getCurrentPrice(), imported.getQuantity(), imported.getLeverage(),
+                    imported.getMode(), imported.getRaiseTriggerValue(), imported.getRaiseStopValue());
+        } finally {
+            importingExternalPositionKeys.remove(importKey);
+        }
     }
 
     public List<ManagedPositionEntity> positionHistory(Long userId, String symbol, String side, ManagedOrderMode mode,
@@ -534,13 +641,81 @@ public class ManagedTradeService {
     @EventListener
     @Transactional
     public void handleOrderTradeUpdate(OrderTradeUpdateEvent event) {
-        if (event == null || event.orderId() == null) {
+        if (event == null || (isBlank(event.orderId()) && isBlank(event.clientOrderId()))) {
             return;
         }
-        pendingOrderRepository.findFirstByOrderId(event.orderId())
-                .ifPresent(pending -> handlePendingOrderUpdate(pending, event));
-        managedPositionRepository.findFirstByCloseOrderId(event.orderId())
-                .ifPresent(position -> handleCloseOrderUpdate(position, event));
+        boolean terminalUpdate = event.isFilled() || event.isCanceled() || event.isExpired();
+        if (terminalUpdate) {
+            bufferUnmatchedOrderUpdate(event);
+        }
+        findPendingOrder(event).ifPresentOrElse(pending -> {
+            removeBufferedOrderUpdate(pending);
+            handlePendingOrderUpdate(pending, event);
+        }, () -> {
+            if (terminalUpdate) {
+                log.warn("Binance order update arrived before managed pending order was visible orderId={}, clientOrderId={}, status={}",
+                        event.orderId(), event.clientOrderId(), event.orderStatus());
+            }
+        });
+        if (!isBlank(event.orderId())) {
+            managedPositionRepository.findFirstByCloseOrderId(event.orderId())
+                    .ifPresent(position -> handleCloseOrderUpdate(position, event));
+        }
+    }
+
+    private java.util.Optional<PendingOrderEntity> findPendingOrder(OrderTradeUpdateEvent event) {
+        if (!isBlank(event.orderId())) {
+            java.util.Optional<PendingOrderEntity> byOrderId = pendingOrderRepository.findFirstByOrderId(event.orderId());
+            if (byOrderId.isPresent()) {
+                return byOrderId;
+            }
+        }
+        if (!isBlank(event.clientOrderId())) {
+            return pendingOrderRepository.findFirstByClientOrderId(event.clientOrderId());
+        }
+        return java.util.Optional.empty();
+    }
+
+    private void bufferUnmatchedOrderUpdate(OrderTradeUpdateEvent event) {
+        trimUnmatchedOrderUpdates();
+        if (!isBlank(event.orderId())) {
+            unmatchedOrderUpdates.put(orderUpdateKey("ORDER", event.orderId()), event);
+        }
+        if (!isBlank(event.clientOrderId())) {
+            unmatchedOrderUpdates.put(orderUpdateKey("CLIENT", event.clientOrderId()), event);
+        }
+    }
+
+    private void trimUnmatchedOrderUpdates() {
+        while (unmatchedOrderUpdates.size() >= MAX_UNMATCHED_ORDER_UPDATE_KEYS) {
+            String key = unmatchedOrderUpdates.keySet().stream().findFirst().orElse(null);
+            if (key == null) {
+                return;
+            }
+            unmatchedOrderUpdates.remove(key);
+        }
+    }
+
+    private OrderTradeUpdateEvent removeBufferedOrderUpdate(PendingOrderEntity pending) {
+        OrderTradeUpdateEvent event = null;
+        if (!isBlank(pending.getOrderId())) {
+            event = unmatchedOrderUpdates.remove(orderUpdateKey("ORDER", pending.getOrderId()));
+        }
+        if (!isBlank(pending.getClientOrderId())) {
+            OrderTradeUpdateEvent byClientOrderId = unmatchedOrderUpdates.remove(orderUpdateKey("CLIENT", pending.getClientOrderId()));
+            if (event == null) {
+                event = byClientOrderId;
+            }
+        }
+        return event;
+    }
+
+    private String orderUpdateKey(String type, String value) {
+        return type + ":" + value;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     @EventListener
@@ -605,16 +780,15 @@ public class ManagedTradeService {
             return;
         }
         try {
-            pending.mark(PendingOrderStatus.FILLED);
-            pendingOrderRepository.save(pending);
-            ManagedPositionEntity position = openManagedPosition(pending, pending.getEntryPrice(), pending.getQuantity());
-            position.appendEvent("TEST_ENTRY_FILLED limitPrice=" + pending.getEntryPrice()
-                    + ", triggerMarkPrice=" + currentPrice + ", BinanceOrderApiCalled=false");
-            managedPositionRepository.save(position);
-            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
-            log.info("managed test order filled internally pendingId={}, positionId={}, symbol={}, configuredEntryPrice={}, fillPrice={}, quantity={}",
-                    pending.getId(), position.getId(), position.getSymbol(), pending.getEntryPrice(),
-                    position.getEntryPrice(), position.getQuantity());
+            ManagedPositionEntity position = fillPendingOrder(pending, pending.getEntryPrice(), pending.getQuantity(), "TEST_MARK_PRICE");
+            if (position != null) {
+                position.appendEvent("TEST_ENTRY_FILLED limitPrice=" + pending.getEntryPrice()
+                        + ", triggerMarkPrice=" + currentPrice + ", BinanceOrderApiCalled=false");
+                managedPositionRepository.save(position);
+                log.info("managed test order filled internally pendingId={}, positionId={}, symbol={}, configuredEntryPrice={}, fillPrice={}, quantity={}",
+                        pending.getId(), position.getId(), position.getSymbol(), pending.getEntryPrice(),
+                        position.getEntryPrice(), position.getQuantity());
+            }
         } finally {
             fillingTestOrderIds.remove(pending.getId());
         }
@@ -629,14 +803,7 @@ public class ManagedTradeService {
             return;
         }
         if (event.isFilled()) {
-            pending = repairPendingSizingIfNeeded(pending);
-            pending.mark(PendingOrderStatus.FILLED);
-            pendingOrderRepository.save(pending);
-            ManagedPositionEntity position = openManagedPosition(pending, event.averagePrice(), event.executedQuantity());
-            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
-            log.info("managed position opened id={}, symbol={}, entryOrderId={}, fillPrice={}, executedQuantity={}, leverage={}, requiredMargin={}",
-                    position.getId(), position.getSymbol(), position.getEntryOrderId(), position.getEntryPrice(),
-                    position.getQuantity(), position.getLeverage(), position.getRequiredMargin());
+            fillPendingOrder(pending, event.averagePrice(), event.executedQuantity(), "BINANCE_USER_STREAM");
             return;
         }
         if (event.isCanceled()) {
@@ -647,6 +814,33 @@ public class ManagedTradeService {
         if (event.isExpired()) {
             pending.mark(PendingOrderStatus.EXPIRED);
             pendingOrderRepository.save(pending);
+        }
+    }
+
+    private ManagedPositionEntity fillPendingOrder(PendingOrderEntity pending, BigDecimal fillPrice,
+                                                   BigDecimal executedQuantity, String source) {
+        if (pending == null || pending.getId() == null || !fillingPendingOrderIds.add(pending.getId())) {
+            return null;
+        }
+        try {
+            PendingOrderEntity latest = pendingOrderRepository.findById(pending.getId()).orElse(null);
+            if (latest == null || latest.getStatus() != PendingOrderStatus.PENDING) {
+                return null;
+            }
+            latest = repairPendingSizingIfNeeded(latest);
+            latest.mark(PendingOrderStatus.FILLED);
+            pendingOrderRepository.save(latest);
+            ManagedPositionEntity position = openManagedPosition(latest, fillPrice, executedQuantity);
+            position.appendEvent("MANAGED_POSITION_OPENED source=" + source);
+            managedPositionRepository.save(position);
+            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+            log.info("managed position opened source={}, executionMode={}, id={}, symbol={}, entryOrderId={}, fillPrice={}, executedQuantity={}, leverage={}, requiredMargin={}",
+                    source, position.getExecutionMode(), position.getId(), position.getSymbol(),
+                    position.getEntryOrderId(), position.getEntryPrice(), position.getQuantity(),
+                    position.getLeverage(), position.getRequiredMargin());
+            return position;
+        } finally {
+            fillingPendingOrderIds.remove(pending.getId());
         }
     }
 
@@ -927,24 +1121,111 @@ public class ManagedTradeService {
         managedPositionRepository.save(position);
         monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
         try {
-            Order order = exchangeConnector.order(closeCurrentPriceParams(position));
-            position.markClosing(order.getOrderId(), reason);
-            if ("FILLED".equalsIgnoreCase(order.getStatus())) {
-                BigDecimal closePrice = fillPrice(order, position.getCurrentPrice());
-                position.markClosed(calculatePnl(position, closePrice), closePrice);
+            BigDecimal closeQuantity = actualCloseQuantityOrCloseAsExternal(position);
+            if (closeQuantity == null) {
                 closingPositionIds.remove(position.getId());
+                return;
             }
+            Map<String, String> closeParams = closeCurrentPriceParams(position, closeQuantity);
+            log.info("managed close order sending positionId={}, oldStatus=ACTIVE, newStatus=CLOSING, symbol={}, quantity={}, reduceOnly={}, closeReason={}",
+                    position.getId(), position.getSymbol(), closeParams.get("quantity"),
+                    closeParams.get("reduceOnly"), reason);
+            Order order = exchangeConnector.order(closeParams);
+            position.markClosing(order.getOrderId(), reason);
             managedPositionRepository.save(position);
             monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
         } catch (RuntimeException e) {
+            if (closeRejectedBecauseAlreadyClosed(position, e)) {
+                closingPositionIds.remove(position.getId());
+                return;
+            }
             position.restoreActiveAfterCloseFailure(e.getMessage());
             closingPositionIds.remove(position.getId());
             managedPositionRepository.save(position);
             monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
-            log.error("managed close failed positionId={}, symbol={}, closeSkippedReason=ORDER_FAILED",
-                    position.getId(), position.getSymbol(), e);
+            log.error("managed close failed positionId={}, symbol={}, errorCode={}, errorMessage={}, closeSkippedReason=ORDER_FAILED",
+                    position.getId(), position.getSymbol(), binanceErrorCode(e), e.getMessage(), e);
             throw e;
         }
+    }
+
+    private BigDecimal actualCloseQuantityOrCloseAsExternal(ManagedPositionEntity position) {
+        PositionRisk actual = currentExchangePosition(position);
+        if (actual == null
+                || actual.getPositionAmt() == null
+                || actual.getPositionAmt().signum() == 0
+                || !sameDirection(position, actual)) {
+            BigDecimal closePrice = position.getCurrentPrice() == null ? position.getEntryPrice() : position.getCurrentPrice();
+            position.markClosing(null, ManagedPositionCloseReason.EXTERNAL_POSITION_CLOSED);
+            position.markClosed(calculatePnl(position, closePrice), closePrice);
+            managedPositionRepository.save(position);
+            monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+            log.warn("managed close skipped positionId={}, symbol={}, closeSkippedReason=POSITION_ALREADY_CLOSED",
+                    position.getId(), position.getSymbol());
+            return null;
+        }
+        return actual.getPositionAmt().abs();
+    }
+
+    private boolean closeRejectedBecauseAlreadyClosed(ManagedPositionEntity position, RuntimeException error) {
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        if (!message.contains("-2022") && !message.contains("ReduceOnly")) {
+            return false;
+        }
+        PositionRisk actual;
+        try {
+            actual = currentExchangePosition(position);
+        } catch (RuntimeException checkError) {
+            log.warn("managed close rejection recovery skipped because actual position check failed positionId={}, symbol={}",
+                    position.getId(), position.getSymbol(), checkError);
+            return false;
+        }
+        if (actual != null && actual.getPositionAmt() != null && actual.getPositionAmt().signum() != 0
+                && sameDirection(position, actual)) {
+            return false;
+        }
+        BigDecimal closePrice = position.getCurrentPrice() == null ? position.getEntryPrice() : position.getCurrentPrice();
+        position.markClosing(null, ManagedPositionCloseReason.EXTERNAL_POSITION_CLOSED);
+        position.markClosed(calculatePnl(position, closePrice), closePrice);
+        managedPositionRepository.save(position);
+        monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+        log.warn("managed close rejected but Binance position is already closed positionId={}, symbol={}, errorCode={}, errorMessage={}, closeSkippedReason=POSITION_ALREADY_CLOSED",
+                position.getId(), position.getSymbol(), binanceErrorCode(error), error.getMessage());
+        return true;
+    }
+
+    private PositionRisk currentExchangePosition(ManagedPositionEntity position) {
+        try {
+            return clientService.getPositions().stream()
+                    .filter(exchangePosition -> exchangePosition.getSymbol().equalsIgnoreCase(position.getSymbol()))
+                    .findFirst()
+                    .orElse(null);
+        } catch (RuntimeException error) {
+            log.warn("managed close actual position check failed positionId={}, symbol={}",
+                    position.getId(), position.getSymbol(), error);
+            throw error;
+        }
+    }
+
+    private boolean sameDirection(ManagedPositionEntity position, PositionRisk actual) {
+        if (actual == null || actual.getPositionAmt() == null) {
+            return false;
+        }
+        return isLong(position) ? actual.getPositionAmt().signum() > 0 : actual.getPositionAmt().signum() < 0;
+    }
+
+    private String binanceErrorCode(RuntimeException error) {
+        String message = error.getMessage();
+        if (message == null) {
+            return null;
+        }
+        int marker = message.indexOf("code=");
+        if (marker < 0) {
+            return null;
+        }
+        int start = marker + "code=".length();
+        int end = message.indexOf(',', start);
+        return end < 0 ? message.substring(start).trim() : message.substring(start, end).trim();
     }
 
     private String closeSkipReason(ManagedPositionEntity position) {
@@ -963,9 +1244,9 @@ public class ManagedTradeService {
         return "CONDITION_NOT_MATCHED";
     }
 
-    private Map<String, String> closeCurrentPriceParams(ManagedPositionEntity position) {
+    private Map<String, String> closeCurrentPriceParams(ManagedPositionEntity position, BigDecimal closeQuantity) {
         ManagedOrderSymbolRule orderRule = orderRule(position.getSymbol());
-        String quantity = adjustCloseQuantity(position.getSymbol(), position.getQuantity(), orderRule);
+        String quantity = adjustCloseQuantity(position.getSymbol(), closeQuantity, orderRule);
         String price = adjustClosePrice(position.getSymbol(), position.getCurrentPrice(), orderRule);
         Map<String, String> params = new LinkedHashMap<>();
         params.put("symbol", position.getSymbol());

@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import st.indicator.stindicator.domain.entity.ManagedOrderMode;
 import st.indicator.stindicator.domain.entity.ManagedPositionCloseReason;
 import st.indicator.stindicator.domain.entity.ManagedPositionStatus;
+import st.indicator.stindicator.domain.entity.PositionRisk;
 import st.indicator.stindicator.domain.entity.RaiseStopType;
 import st.indicator.stindicator.domain.entity.TriggerBasis;
 import st.indicator.stindicator.domain.entity.TradeExecutionMode;
@@ -131,6 +132,72 @@ public class ManagedPositionEntity {
         entity.appendEvent("MONITORING_STARTED mode=" + entity.getMode()
                 + ", executionMode=" + entity.getExecutionMode()
                 + ", stopBasis=" + entity.getStopTriggerBasis()
+                + ", raiseTriggerType=" + entity.raiseTriggerType
+                + ", raiseTriggerValue=" + entity.raiseTriggerValue
+                + ", raiseStopType=" + entity.raiseStopType
+                + ", raiseStopValue=" + entity.raiseStopValue);
+        return entity;
+    }
+
+    public static ManagedPositionEntity fromExternalPosition(Long userId, PositionRisk position) {
+        if (position == null
+                || position.getPositionAmt() == null
+                || position.getPositionAmt().signum() == 0
+                || position.getEntryPrice() == null
+                || position.getEntryPrice().signum() <= 0) {
+            throw new IllegalArgumentException("편입할 Binance 포지션의 수량과 진입가는 필수입니다.");
+        }
+        ManagedPositionEntity entity = new ManagedPositionEntity();
+        boolean longSide = position.getPositionAmt().signum() > 0;
+        BigDecimal onePercent = new BigDecimal("0.01");
+        entity.userId = userId;
+        entity.symbol = position.getSymbol();
+        entity.entrySide = longSide ? "BUY" : "SELL";
+        entity.closeSide = longSide ? "SELL" : "BUY";
+        entity.entryOrderId = "EXTERNAL-" + position.getSymbol() + "-" + System.currentTimeMillis();
+        entity.entryPrice = position.getEntryPrice();
+        entity.quantity = position.getPositionAmt().abs();
+        entity.leverage = valueOrDefault(position.getLeverage(), BigDecimal.ONE);
+        entity.requiredMargin = calculateRequiredMargin(entity.entryPrice, entity.quantity, entity.leverage);
+        entity.atr = null;
+        entity.atrMultiplier = BigDecimal.ONE;
+        entity.riskPercent = BigDecimal.ONE;
+        entity.stopTriggerBasis = TriggerBasis.PRICE_PERCENT;
+        entity.takeProfitTriggerBasis = null;
+        entity.mode = ManagedOrderMode.RAISING_STOP_ONLY;
+        entity.executionMode = TradeExecutionMode.REAL;
+        entity.raiseStopEnabled = true;
+        entity.raiseTriggerType = RaiseStopType.PERCENT;
+        entity.raiseTriggerValue = BigDecimal.ONE;
+        entity.raiseStopType = RaiseStopType.PERCENT;
+        entity.raiseStopValue = new BigDecimal("50");
+        entity.raiseActivated = false;
+        entity.initialStopPrice = longSide
+                ? entity.entryPrice.multiply(BigDecimal.ONE.subtract(onePercent))
+                : entity.entryPrice.multiply(BigDecimal.ONE.add(onePercent));
+        entity.currentStopPrice = entity.initialStopPrice;
+        entity.targetPrice = null;
+        entity.possibleLoss = entity.initialStopPrice.subtract(entity.entryPrice).abs().multiply(entity.quantity);
+        entity.possibleProfit = null;
+        entity.currentPrice = position.getMarkPrice() == null || position.getMarkPrice().signum() <= 0
+                ? entity.entryPrice
+                : position.getMarkPrice();
+        entity.unrealizedPnl = position.getUnrealizedProfit() == null ? BigDecimal.ZERO : position.getUnrealizedProfit();
+        entity.realizedPnl = BigDecimal.ZERO;
+        entity.highestPrice = entity.entryPrice.max(entity.currentPrice);
+        entity.lowestPrice = entity.entryPrice.min(entity.currentPrice);
+        entity.status = ManagedPositionStatus.ACTIVE;
+        entity.openedAt = LocalDateTime.now();
+        entity.updatedAt = entity.openedAt;
+        entity.appendEvent("EXTERNAL_POSITION_IMPORTED symbol=" + entity.symbol
+                + ", side=" + entity.entrySide
+                + ", entryPrice=" + entity.entryPrice
+                + ", currentPrice=" + entity.currentPrice
+                + ", quantity=" + entity.quantity
+                + ", leverage=" + entity.leverage);
+        entity.appendEvent("MONITORING_STARTED mode=" + entity.mode
+                + ", executionMode=" + entity.executionMode
+                + ", stopBasis=" + entity.stopTriggerBasis
                 + ", raiseTriggerType=" + entity.raiseTriggerType
                 + ", raiseTriggerValue=" + entity.raiseTriggerValue
                 + ", raiseStopType=" + entity.raiseStopType
