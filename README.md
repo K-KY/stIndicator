@@ -346,3 +346,77 @@ POST /client/positions/liquidate?symbol=BTCUSDT
 - `LIMIT` 주문 시 `price`, `timeInForce` 값을 함께 넣는 것을 권장합니다.
 - `POST /client/atr/order` 에서 `entryPrice` 를 생략하면 계산은 현재가 기준으로 되지만 실제 주문은 `MARKET` 주문이 가장 자연스럽습니다.
 - ATR 계산을 위해서는 `atrPeriod` 보다 충분히 큰 `limit` 값을 주는 것이 좋습니다.
+
+## Docker 이미지 릴리스
+
+루트의 `scripts/docker-release.sh`는 백엔드, 프론트엔드, TimesFM 예측 서버 이미지를 같은 버전으로 빌드하고 Docker Hub `rlarbdud` 네임스페이스에 push한다.
+
+대상 이미지:
+
+- `rlarbdud/st-back`
+- `rlarbdud/st-front`
+- `rlarbdud/st-forecast`
+
+태그 정책:
+
+- `VERSION` 파일의 patch 버전을 1 증가시킨 버전 태그를 붙인다.
+- 같은 이미지에 `latest` 태그도 함께 붙인다.
+- 예: `VERSION=0.1.1`이면 `0.1.2`, `latest` 태그로 push한다.
+
+실행 전 필요 조건:
+
+- Docker 실행
+- Docker Hub 로그인
+- `docker buildx` 사용 가능
+
+실행:
+
+```bash
+./scripts/docker-release.sh
+```
+
+실제 push 없이 명령 확인:
+
+```bash
+./scripts/docker-release.sh --dry-run
+```
+
+특정 버전으로 push:
+
+```bash
+./scripts/docker-release.sh --version 0.1.5
+```
+
+네임스페이스 또는 플랫폼 변경:
+
+```bash
+./scripts/docker-release.sh --namespace rlarbdud --platforms linux/amd64,linux/arm64
+```
+
+## 포지션 동기화 정책
+
+로컬 서비스와 서버 서비스는 서로 다른 DB를 사용한다. 각 인스턴스는 자기 DB에 저장된 관리 설정과 관리 기록만 신뢰한다.
+
+Binance에서 조회할 수 있는 값은 실제 주문, 실제 포지션 수량, 진입가, 현재가, 미실현 손익, 레버리지 같은 거래소 상태다. 서비스 자체 관리 설정인 손절 기준, 익절 기준, 손절선 상승 설정, ATR 조건, 관리 모드는 Binance에 저장되지 않는다.
+
+외부 포지션 상태:
+
+- `NEEDS_CONFIGURATION`: Binance에는 실제 포지션이 있지만 현재 서비스 DB에는 관리 설정이 없는 상태다.
+- `EXTERNAL_UNMANAGED`: 현재 서비스가 자동 TP/SL 평가를 하지 않는 외부 감지 포지션이다.
+- `ACTIVE_MANAGED`: 현재 서비스 DB에 관리 설정이 저장되어 있고 가격 WebSocket으로 TP/SL 또는 손절선 상승 평가를 수행하는 상태다.
+- `CLOSING`: 현재 서비스가 청산을 진행 중인 상태다.
+- `CLOSED`: 현재 서비스의 관리가 종료된 상태다.
+
+외부 포지션 처리 규칙:
+
+- Binance 실제 포지션이 있어도 현재 서비스 DB에 관리 설정이 없으면 자동 관리 포지션으로 만들지 않는다.
+- 외부 포지션은 자동 손절, 자동 익절, 손절선 상승 평가 대상이 아니다.
+- 외부 포지션에는 `stopPrice`, `targetPrice`, ATR 설정, TriggerBasis, possibleLoss, possibleProfit을 임의로 생성하지 않는다.
+- 사용자가 현재 서비스에서 관리 설정을 저장해야 `ACTIVE_MANAGED`로 전환된다.
+- `ACTIVE_MANAGED`로 전환된 뒤부터 현재 서비스가 가격 WebSocket 기반으로 조건을 평가한다.
+
+포지션 기록 정책:
+
+- 현재 서비스에서 생성하거나 현재 서비스에서 관리 설정을 저장한 `ACTIVE_MANAGED` 포지션만 상세 관리 기록을 남긴다.
+- 다른 인스턴스나 Binance 앱에서 관리된 포지션의 전략 조건은 현재 서비스 DB에 없으므로 복원하지 않는다.
+- 로컬 DB의 기록은 서버 DB에서 보이지 않는 것이 정상이다.
