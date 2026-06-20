@@ -33,6 +33,18 @@ public class CandleRequestDto {
         return limit;
     }
 
+    public void setSymbol(String symbol) {
+        this.symbol = symbol;
+    }
+
+    public void setInterval(String interval) {
+        this.interval = interval;
+    }
+
+    public void setLimit(String limit) {
+        this.limit = limit;
+    }
+
     public CandleCommand toCommand() {
         return new CandleCommand(symbol, interval, limit);
     }
