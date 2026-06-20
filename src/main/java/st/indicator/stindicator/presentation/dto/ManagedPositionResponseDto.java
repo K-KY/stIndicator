@@ -63,14 +63,15 @@ public record ManagedPositionResponseDto(
 ) {
     public static ManagedPositionResponseDto from(ManagedPositionEntity entity) {
         String side = "BUY".equalsIgnoreCase(entity.getEntrySide()) ? "LONG" : "SHORT";
-        boolean raisingStopOnly = "RAISING_STOP_ONLY".equals(entity.getMode().name());
+        boolean raisingStopOnly = entity.getMode() != null && "RAISING_STOP_ONLY".equals(entity.getMode().name());
         ManagedRaiseStopCalculator.RaiseStopPlan raisePlan = ManagedRaiseStopCalculator.calculate(entity);
         return new ManagedPositionResponseDto(entity.getId(), entity.getSymbol(), side, entity.getCloseSide(),
                 entity.getEntryOrderId(), entity.getCloseOrderId(), entity.getEntryPrice(), entity.getQuantity(),
                 entity.getCurrentPrice(), entity.getClosePrice(), entity.getUnrealizedPnl(), entity.getRealizedPnl(),
                 entity.getInitialStopPrice(), entity.getCurrentStopPrice(), raisingStopOnly ? null : entity.getTargetPrice(),
                 entity.getPossibleLoss(), raisingStopOnly ? null : entity.getPossibleProfit(), entity.getLeverage(), entity.getRequiredMargin(),
-                entity.getStopTriggerBasis().name(), raisingStopOnly || entity.getTakeProfitTriggerBasis() == null ? null : entity.getTakeProfitTriggerBasis().name(),
+                entity.getStopTriggerBasis() == null ? null : entity.getStopTriggerBasis().name(),
+                raisingStopOnly || entity.getTakeProfitTriggerBasis() == null ? null : entity.getTakeProfitTriggerBasis().name(),
                 priceMovePercent(entity.getEntryPrice(), entity.getCurrentStopPrice()),
                 raisingStopOnly ? null : priceMovePercent(entity.getEntryPrice(), entity.getTargetPrice()),
                 pnlPercent(entity.getPossibleLoss(), entity.getRequiredMargin()),
@@ -79,7 +80,7 @@ public record ManagedPositionResponseDto(
                 priceMovePercent(entity.getEntryPrice(), entity.getCurrentStopPrice()),
                 currentStopMarginPercent(entity),
                 profitRatePercent(entity), priceChangePercent(entity), realizedPnlPercent(entity), liquidationPrice(entity),
-                entity.getAtr(), entity.getAtrMultiplier(), entity.getRiskPercent(), entity.getMode().name(),
+                entity.getAtr(), entity.getAtrMultiplier(), entity.getRiskPercent(), entity.getMode() == null ? null : entity.getMode().name(),
                 entity.isRaiseActivated(),
                 entity.getRaiseTriggerType() == null ? null : entity.getRaiseTriggerType().name(),
                 entity.getRaiseTriggerValue(),

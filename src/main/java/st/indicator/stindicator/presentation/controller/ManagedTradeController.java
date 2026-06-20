@@ -113,6 +113,20 @@ public class ManagedTradeController implements ManagedTradeApi {
     }
 
     @Override
+    public ManagedPositionResponseDto startTestVolatility(Long id, String direction, HttpSession session) {
+        return ManagedPositionResponseDto.from(
+                managedTradeService.startTestVolatility(requireSessionUserId(session), id, direction)
+        );
+    }
+
+    @Override
+    public ManagedPositionResponseDto stopTestVolatility(Long id, HttpSession session) {
+        return ManagedPositionResponseDto.from(
+                managedTradeService.stopTestVolatility(requireSessionUserId(session), id)
+        );
+    }
+
+    @Override
     public List<ManagedStopHistoryResponseDto> stopHistory(Long id, HttpSession session) {
         return managedTradeService.stopHistory(requireSessionUserId(session), id).stream()
                 .map(ManagedStopHistoryResponseDto::from)

@@ -12,8 +12,12 @@ public interface ManagedPositionJpaRepository extends JpaRepository<ManagedPosit
     Optional<ManagedPositionEntity> findFirstByCloseOrderId(String closeOrderId);
     boolean existsByUserIdAndSymbolAndStatusInAndExecutionMode(
             Long userId, String symbol, List<ManagedPositionStatus> statuses, TradeExecutionMode executionMode);
+    List<ManagedPositionEntity> findAllByUserIdAndSymbolAndStatusInAndExecutionMode(
+            Long userId, String symbol, List<ManagedPositionStatus> statuses, TradeExecutionMode executionMode);
     List<ManagedPositionEntity> findAllByStatusOrderByOpenedAtDesc(ManagedPositionStatus status);
     List<ManagedPositionEntity> findAllByUserIdAndStatusOrderByOpenedAtDesc(Long userId, ManagedPositionStatus status);
+    List<ManagedPositionEntity> findAllByStatusInOrderByOpenedAtDesc(List<ManagedPositionStatus> statuses);
+    List<ManagedPositionEntity> findAllByUserIdAndStatusInOrderByOpenedAtDesc(Long userId, List<ManagedPositionStatus> statuses);
     List<ManagedPositionEntity> findAllByStatusInOrderByClosedAtDesc(List<ManagedPositionStatus> statuses);
     List<ManagedPositionEntity> findAllByUserIdAndStatusInOrderByClosedAtDesc(Long userId, List<ManagedPositionStatus> statuses);
     List<ManagedPositionEntity> findAllBySymbolAndStatus(String symbol, ManagedPositionStatus status);

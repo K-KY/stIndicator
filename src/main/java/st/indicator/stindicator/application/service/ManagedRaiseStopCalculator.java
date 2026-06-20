@@ -14,6 +14,11 @@ public final class ManagedRaiseStopCalculator {
     }
 
     public static RaiseStopPlan calculate(ManagedPositionEntity position) {
+        return calculate(position, position == null ? null : position.getCurrentPrice(),
+                position == null ? null : position.getUnrealizedPnl());
+    }
+
+    public static RaiseStopPlan calculate(ManagedPositionEntity position, BigDecimal currentPrice, BigDecimal currentPnl) {
         if (position == null
                 || !position.isRaiseStopEnabled()
                 || position.getEntryPrice() == null
@@ -24,8 +29,8 @@ public final class ManagedRaiseStopCalculator {
         }
 
         return position.getStopTriggerBasis() == TriggerBasis.PNL_PERCENT
-                ? calculatePnlPlan(position)
-                : calculatePricePlan(position);
+                ? calculatePnlPlan(position, currentPnl)
+                : calculatePricePlan(position, currentPrice);
     }
 
     public static boolean reached(ManagedPositionEntity position, BigDecimal currentPrice,
@@ -44,14 +49,22 @@ public final class ManagedRaiseStopCalculator {
                 : currentPrice.compareTo(plan.triggerPrice()) <= 0;
     }
 
-    private static RaiseStopPlan calculatePricePlan(ManagedPositionEntity position) {
+    private static RaiseStopPlan calculatePricePlan(ManagedPositionEntity position, BigDecimal currentPrice) {
         BigDecimal entryPrice = position.getEntryPrice();
-        BigDecimal protectedMove = favorableMove(position, position.getCurrentStopPrice()).max(BigDecimal.ZERO);
         BigDecimal triggerIncrement = position.getRaiseTriggerType() == RaiseStopType.AMOUNT
                 ? valueOrZero(position.getRaiseTriggerValue())
                 : entryPrice.multiply(valueOrZero(position.getRaiseTriggerValue()))
                 .divide(ONE_HUNDRED, 18, RoundingMode.HALF_UP);
-        BigDecimal triggerMove = protectedMove.add(triggerIncrement);
+        if (triggerIncrement.signum() <= 0) {
+            return null;
+        }
+        BigDecimal currentMove = currentPrice == null
+                ? BigDecimal.ZERO
+                : favorableMove(position, currentPrice).max(BigDecimal.ZERO);
+        BigDecimal triggerMove = steppedProgress(currentMove, triggerIncrement);
+        if (triggerMove.signum() <= 0) {
+            triggerMove = triggerIncrement;
+        }
         BigDecimal triggerPrice = priceAtMove(position, triggerMove);
 
         BigDecimal nextStopPrice;
@@ -72,16 +85,22 @@ public final class ManagedRaiseStopCalculator {
                 nextStopPrice, protectedPnl, marginPercent(position, protectedPnl));
     }
 
-    private static RaiseStopPlan calculatePnlPlan(ManagedPositionEntity position) {
+    private static RaiseStopPlan calculatePnlPlan(ManagedPositionEntity position, BigDecimal currentPnl) {
         if (position.getRequiredMargin() == null || position.getRequiredMargin().signum() <= 0) {
             return null;
         }
-        BigDecimal protectedPnl = pnlAtPrice(position, position.getCurrentStopPrice()).max(BigDecimal.ZERO);
         BigDecimal triggerIncrement = position.getRaiseTriggerType() == RaiseStopType.AMOUNT
                 ? valueOrZero(position.getRaiseTriggerValue())
                 : position.getRequiredMargin().multiply(valueOrZero(position.getRaiseTriggerValue()))
                 .divide(ONE_HUNDRED, 18, RoundingMode.HALF_UP);
-        BigDecimal triggerPnl = protectedPnl.add(triggerIncrement);
+        if (triggerIncrement.signum() <= 0) {
+            return null;
+        }
+        BigDecimal favorablePnl = currentPnl == null ? BigDecimal.ZERO : currentPnl.max(BigDecimal.ZERO);
+        BigDecimal triggerPnl = steppedProgress(favorablePnl, triggerIncrement);
+        if (triggerPnl.signum() <= 0) {
+            triggerPnl = triggerIncrement;
+        }
         BigDecimal triggerPrice = priceAtPnl(position, triggerPnl);
 
         BigDecimal nextProtectedPnl = position.getRaiseStopType() == RaiseStopType.AMOUNT
@@ -92,6 +111,14 @@ public final class ManagedRaiseStopCalculator {
         nextProtectedPnl = pnlAtPrice(position, nextStopPrice);
         return new RaiseStopPlan(triggerPrice, triggerPnl, nextStopPrice,
                 nextProtectedPnl, marginPercent(position, nextProtectedPnl));
+    }
+
+    private static BigDecimal steppedProgress(BigDecimal currentProgress, BigDecimal triggerIncrement) {
+        if (currentProgress == null || currentProgress.signum() <= 0
+                || triggerIncrement == null || triggerIncrement.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return currentProgress.divideToIntegralValue(triggerIncrement).multiply(triggerIncrement);
     }
 
     private static BigDecimal favorableMove(ManagedPositionEntity position, BigDecimal price) {

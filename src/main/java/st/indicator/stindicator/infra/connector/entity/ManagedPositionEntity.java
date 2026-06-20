@@ -124,7 +124,7 @@ public class ManagedPositionEntity {
         entity.currentPrice = entity.entryPrice;
         entity.realizedPnl = BigDecimal.ZERO;
         entity.unrealizedPnl = BigDecimal.ZERO;
-        entity.status = ManagedPositionStatus.ACTIVE;
+        entity.status = ManagedPositionStatus.ACTIVE_MANAGED;
         entity.openedAt = LocalDateTime.now();
         entity.updatedAt = entity.openedAt;
         entity.appendEvent("ENTRY_FILLED symbol=" + entity.symbol + ", entryOrderId=" + entity.entryOrderId
@@ -149,7 +149,6 @@ public class ManagedPositionEntity {
         }
         ManagedPositionEntity entity = new ManagedPositionEntity();
         boolean longSide = position.getPositionAmt().signum() > 0;
-        BigDecimal onePercent = new BigDecimal("0.01");
         entity.userId = userId;
         entity.symbol = position.getSymbol();
         entity.entrySide = longSide ? "BUY" : "SELL";
@@ -160,49 +159,55 @@ public class ManagedPositionEntity {
         entity.leverage = valueOrDefault(position.getLeverage(), BigDecimal.ONE);
         entity.requiredMargin = calculateRequiredMargin(entity.entryPrice, entity.quantity, entity.leverage);
         entity.atr = null;
-        entity.atrMultiplier = BigDecimal.ONE;
+        entity.atrMultiplier = null;
         entity.riskPercent = BigDecimal.ONE;
-        entity.stopTriggerBasis = TriggerBasis.PRICE_PERCENT;
-        entity.takeProfitTriggerBasis = null;
-        entity.mode = ManagedOrderMode.RAISING_STOP_ONLY;
+        entity.stopTriggerBasis = TriggerBasis.PNL_PERCENT;
+        entity.takeProfitTriggerBasis = TriggerBasis.PNL_PERCENT;
+        entity.mode = ManagedOrderMode.FIXED_TP_SL;
         entity.executionMode = TradeExecutionMode.REAL;
-        entity.raiseStopEnabled = true;
-        entity.raiseTriggerType = RaiseStopType.PERCENT;
-        entity.raiseTriggerValue = BigDecimal.ONE;
-        entity.raiseStopType = RaiseStopType.PERCENT;
-        entity.raiseStopValue = new BigDecimal("50");
+        entity.raiseStopEnabled = false;
+        entity.raiseTriggerType = null;
+        entity.raiseTriggerValue = null;
+        entity.raiseStopType = null;
+        entity.raiseStopValue = null;
         entity.raiseActivated = false;
-        entity.initialStopPrice = longSide
-                ? entity.entryPrice.multiply(BigDecimal.ONE.subtract(onePercent))
-                : entity.entryPrice.multiply(BigDecimal.ONE.add(onePercent));
-        entity.currentStopPrice = entity.initialStopPrice;
-        entity.targetPrice = null;
-        entity.possibleLoss = entity.initialStopPrice.subtract(entity.entryPrice).abs().multiply(entity.quantity);
-        entity.possibleProfit = null;
         entity.currentPrice = position.getMarkPrice() == null || position.getMarkPrice().signum() <= 0
                 ? entity.entryPrice
                 : position.getMarkPrice();
+        entity.applyDefaultExternalFixedPlan();
         entity.unrealizedPnl = position.getUnrealizedProfit() == null ? BigDecimal.ZERO : position.getUnrealizedProfit();
         entity.realizedPnl = BigDecimal.ZERO;
         entity.highestPrice = entity.entryPrice.max(entity.currentPrice);
         entity.lowestPrice = entity.entryPrice.min(entity.currentPrice);
-        entity.status = ManagedPositionStatus.ACTIVE;
+        entity.status = ManagedPositionStatus.ACTIVE_MANAGED;
         entity.openedAt = LocalDateTime.now();
         entity.updatedAt = entity.openedAt;
-        entity.appendEvent("EXTERNAL_POSITION_IMPORTED symbol=" + entity.symbol
+        entity.appendEvent("EXTERNAL_POSITION_IMPORTED source=BINANCE_SYNC, symbol=" + entity.symbol
                 + ", side=" + entity.entrySide
                 + ", entryPrice=" + entity.entryPrice
                 + ", currentPrice=" + entity.currentPrice
                 + ", quantity=" + entity.quantity
-                + ", leverage=" + entity.leverage);
-        entity.appendEvent("MONITORING_STARTED mode=" + entity.mode
-                + ", executionMode=" + entity.executionMode
-                + ", stopBasis=" + entity.stopTriggerBasis
-                + ", raiseTriggerType=" + entity.raiseTriggerType
-                + ", raiseTriggerValue=" + entity.raiseTriggerValue
-                + ", raiseStopType=" + entity.raiseStopType
-                + ", raiseStopValue=" + entity.raiseStopValue);
+                + ", leverage=" + entity.leverage
+                + ", requiredMargin=" + entity.requiredMargin
+                + ", defaultStopPercent=1"
+                + ", defaultTakeProfitPercent=1");
+        entity.appendEvent("DEFAULT_FIXED_TP_SL_APPLIED source=BINANCE_SYNC, stopBasis=PNL_PERCENT, takeProfitBasis=PNL_PERCENT");
         return entity;
+    }
+
+    private void applyDefaultExternalFixedPlan() {
+        BigDecimal defaultRate = new BigDecimal("0.01");
+        BigDecimal quantityValue = valueOrDefault(quantity, BigDecimal.ZERO);
+        BigDecimal marginValue = valueOrDefault(requiredMargin, BigDecimal.ZERO);
+        BigDecimal priceMove = quantityValue.signum() > 0
+                ? marginValue.multiply(defaultRate).divide(quantityValue, 18, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        boolean longSide = "BUY".equalsIgnoreCase(entrySide);
+        this.possibleLoss = marginValue.multiply(defaultRate).setScale(8, RoundingMode.HALF_UP);
+        this.possibleProfit = marginValue.multiply(defaultRate).setScale(8, RoundingMode.HALF_UP);
+        this.initialStopPrice = longSide ? entryPrice.subtract(priceMove) : entryPrice.add(priceMove);
+        this.currentStopPrice = initialStopPrice;
+        this.targetPrice = longSide ? entryPrice.add(priceMove) : entryPrice.subtract(priceMove);
     }
 
     private void applyActualFillExitPlan(PendingOrderEntity pending) {
@@ -310,7 +315,7 @@ public class ManagedPositionEntity {
                                RaiseStopType requestedRaiseStopType, BigDecimal requestedRaiseStopValue) {
         ManagedOrderMode previousMode = getMode();
         BigDecimal previousTargetPrice = targetPrice;
-        if (getStatus() != ManagedPositionStatus.ACTIVE) {
+        if (!isConfigurableForManagement()) {
             throw new IllegalStateException("ACTIVE 상태의 포지션만 손절선 상승 모드를 추가할 수 있습니다.");
         }
         if (raiseTriggerValue == null || raiseTriggerValue.signum() <= 0
@@ -330,6 +335,7 @@ public class ManagedPositionEntity {
         this.raiseStopType = requestedRaiseStopType;
         this.raiseStopValue = requestedRaiseStopValue;
         this.raiseActivated = false;
+        this.status = ManagedPositionStatus.ACTIVE_MANAGED;
         appendEvent("MODE_CHANGED previousMode=" + previousMode
                 + ", mode=" + this.mode
                 + ", currentPrice=" + currentPrice
@@ -348,10 +354,11 @@ public class ManagedPositionEntity {
                                   BigDecimal takeProfitValue) {
         ManagedOrderMode previousMode = getMode();
         BigDecimal previousTargetPrice = targetPrice;
-        if (getStatus() != ManagedPositionStatus.ACTIVE) {
+        if (!isConfigurableForManagement()) {
             throw new IllegalStateException("ACTIVE 상태의 포지션만 고정 TP/SL 모드로 변경할 수 있습니다.");
         }
         this.mode = ManagedOrderMode.FIXED_TP_SL;
+        this.status = ManagedPositionStatus.ACTIVE_MANAGED;
         this.raiseStopEnabled = false;
         this.raiseActivated = false;
         this.raiseTriggerType = null;
@@ -441,6 +448,13 @@ public class ManagedPositionEntity {
     private record FixedExitValue(BigDecimal priceMove, BigDecimal amount) {
     }
 
+    private boolean isConfigurableForManagement() {
+        return status == ManagedPositionStatus.ACTIVE
+                || status == ManagedPositionStatus.ACTIVE_MANAGED
+                || status == ManagedPositionStatus.EXTERNAL_UNMANAGED
+                || status == ManagedPositionStatus.NEEDS_CONFIGURATION;
+    }
+
     private BigDecimal preserveRaisedStop(BigDecimal recalculatedStop, boolean longSide) {
         if (getMode() != ManagedOrderMode.RAISING_STOP_ONLY || !raiseActivated || currentStopPrice == null) {
             return recalculatedStop;
@@ -481,7 +495,37 @@ public class ManagedPositionEntity {
         this.updatedAt = LocalDateTime.now();
     }
 
+    public void updateExternalMarket(PositionRisk position) {
+        if (position == null) {
+            return;
+        }
+        if (position.getEntryPrice() != null && position.getEntryPrice().signum() > 0) {
+            this.entryPrice = position.getEntryPrice();
+        }
+        if (position.getPositionAmt() != null && position.getPositionAmt().signum() != 0) {
+            boolean longSide = position.getPositionAmt().signum() > 0;
+            this.entrySide = longSide ? "BUY" : "SELL";
+            this.closeSide = longSide ? "SELL" : "BUY";
+            this.quantity = position.getPositionAmt().abs();
+        }
+        if (position.getLeverage() != null && position.getLeverage().signum() > 0) {
+            this.leverage = position.getLeverage();
+        }
+        this.requiredMargin = calculateRequiredMargin(this.entryPrice, this.quantity, this.leverage);
+        if (position.getMarkPrice() != null && position.getMarkPrice().signum() > 0) {
+            this.currentPrice = position.getMarkPrice();
+            this.highestPrice = this.highestPrice == null ? this.currentPrice : this.highestPrice.max(this.currentPrice);
+            this.lowestPrice = this.lowestPrice == null ? this.currentPrice : this.lowestPrice.min(this.currentPrice);
+        }
+        this.unrealizedPnl = position.getUnrealizedProfit() == null ? this.unrealizedPnl : position.getUnrealizedProfit();
+        this.updatedAt = LocalDateTime.now();
+    }
+
     public boolean isLegacyManagedPolicy() {
+        if (status == ManagedPositionStatus.EXTERNAL_UNMANAGED
+                || status == ManagedPositionStatus.NEEDS_CONFIGURATION) {
+            return false;
+        }
         if (mode == null || stopTriggerBasis == null || initialStopPrice == null
                 || currentStopPrice == null
                 || possibleLoss == null
@@ -552,7 +596,7 @@ public class ManagedPositionEntity {
 
     public void restoreActiveAfterCloseFailure(String message) {
         appendEvent("CLOSE_ORDER_FAILED message=" + message);
-        this.status = ManagedPositionStatus.ACTIVE;
+        this.status = ManagedPositionStatus.ACTIVE_MANAGED;
         this.closeOrderId = null;
         this.closeReason = null;
         this.updatedAt = LocalDateTime.now();
@@ -577,14 +621,17 @@ public class ManagedPositionEntity {
     public BigDecimal getAtr() { return atr; }
     public BigDecimal getAtrMultiplier() { return atrMultiplier; }
     public BigDecimal getRiskPercent() { return riskPercent; }
-    public TriggerBasis getStopTriggerBasis() { return stopTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : stopTriggerBasis; }
+    public TriggerBasis getStopTriggerBasis() { return stopTriggerBasis; }
     public TriggerBasis getTakeProfitTriggerBasis() {
         if (getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
             return null;
         }
+        if (mode == null) {
+            return takeProfitTriggerBasis;
+        }
         return takeProfitTriggerBasis == null ? TriggerBasis.PRICE_PERCENT : takeProfitTriggerBasis;
     }
-    public ManagedOrderMode getMode() { return mode == null ? ManagedOrderMode.FIXED_TP_SL : mode; }
+    public ManagedOrderMode getMode() { return mode; }
     public boolean isRaiseStopEnabled() { return raiseStopEnabled; }
     public RaiseStopType getRaiseTriggerType() { return raiseTriggerType; }
     public BigDecimal getRaiseTriggerValue() { return raiseTriggerValue; }
