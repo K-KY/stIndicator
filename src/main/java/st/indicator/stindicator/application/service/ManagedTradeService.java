@@ -646,7 +646,7 @@ public class ManagedTradeService {
             UpdateManagedPositionTriggerBasisRequestDto request
     ) {
         ManagedPositionEntity position = position(userId, id);
-        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+        if (!isActiveManagedPosition(position)) {
             throw new IllegalArgumentException("ACTIVE 상태의 관리 포지션만 트리거 기준을 변경할 수 있습니다.");
         }
         if (request == null) {
@@ -679,8 +679,11 @@ public class ManagedTradeService {
         if (request == null) {
             throw new IllegalArgumentException("손절선 상승 설정이 필요합니다.");
         }
-        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+        if (!isActiveManagedPosition(position) && !isExternalPosition(position)) {
             throw new IllegalArgumentException("ACTIVE 상태의 관리 포지션만 손절선 상승 모드를 추가할 수 있습니다.");
+        }
+        if (isExternalPosition(position) || position.getCurrentStopPrice() == null) {
+            throw new IllegalArgumentException("외부 포지션은 손절 기준을 함께 저장하는 모드 변경으로 관리 시작해야 합니다.");
         }
         TriggerBasis previousStopBasis = position.getStopTriggerBasis();
         BigDecimal previousTargetPrice = position.getTargetPrice();
@@ -705,11 +708,22 @@ public class ManagedTradeService {
             throw new IllegalArgumentException("변경할 모드가 필요합니다.");
         }
         ManagedPositionEntity position = position(userId, id);
-        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+        boolean externalPosition = isExternalPosition(position);
+        if (!isActiveManagedPosition(position) && !externalPosition) {
             throw new IllegalArgumentException("ACTIVE 상태의 관리 포지션만 모드를 변경할 수 있습니다.");
         }
         ManagedOrderMode previousMode = position.getMode();
         if (request.getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
+            if (externalPosition || position.getCurrentStopPrice() == null) {
+                position.switchToFixedTpSl(
+                        request.getStopTriggerBasis(),
+                        request.getStopValueType(),
+                        request.getStopValue(),
+                        request.getTakeProfitTriggerBasis(),
+                        request.getTakeProfitValueType(),
+                        request.getTakeProfitValue()
+                );
+            }
             position.addRaisingStop(
                     request.getRaiseTriggerBasis(),
                     positiveOrNull(request.getRaiseTriggerValue(), "raiseTriggerValue"),
@@ -728,8 +742,9 @@ public class ManagedTradeService {
         }
         ManagedPositionEntity saved = managedPositionRepository.save(position);
         monitorService.pushPositionUpdate(saved.getUserId(), saved.getSymbol(), ManagedPositionResponseDto.from(saved));
-        log.info("managed position mode updated id={}, symbol={}, previousMode={}, mode={}, currentStopPrice={}, targetPrice={}, raiseTriggerValue={}, raiseStopType={}, raiseStopValue={}",
-                saved.getId(), saved.getSymbol(), previousMode, saved.getMode(), saved.getCurrentStopPrice(),
+        log.info("managed position mode updated id={}, symbol={}, oldStatus={}, newStatus={}, previousMode={}, mode={}, currentStopPrice={}, targetPrice={}, raiseTriggerValue={}, raiseStopType={}, raiseStopValue={}, sourceOfConfig=DB",
+                saved.getId(), saved.getSymbol(), externalPosition ? "NEEDS_CONFIGURATION" : "ACTIVE_MANAGED",
+                saved.getStatus(), previousMode, saved.getMode(), saved.getCurrentStopPrice(),
                 saved.getTargetPrice(), saved.getRaiseTriggerValue(), saved.getRaiseStopType(), saved.getRaiseStopValue());
         return saved;
     }
