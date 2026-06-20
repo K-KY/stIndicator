@@ -1,6 +1,7 @@
 package st.indicator.stindicator.application.service;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.springframework.http.HttpStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +40,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 @Service
 public class ManagedTradeService {
@@ -58,6 +65,8 @@ public class ManagedTradeService {
     private final Set<Long> evaluatingPositionIds = ConcurrentHashMap.newKeySet();
     private final Set<String> importingExternalPositionKeys = ConcurrentHashMap.newKeySet();
     private final Set<String> recordedStopUpdates = ConcurrentHashMap.newKeySet();
+    private final ScheduledExecutorService testVolatilityExecutor = Executors.newScheduledThreadPool(2);
+    private final Map<Long, ScheduledFuture<?>> testVolatilityTasks = new ConcurrentHashMap<>();
     private final Map<String, ManagedOrderSymbolRule> orderRuleCache = new ConcurrentHashMap<>();
     private final Map<String, OrderTradeUpdateEvent> unmatchedOrderUpdates = new ConcurrentHashMap<>();
 
@@ -92,6 +101,12 @@ public class ManagedTradeService {
         log.info("managed trade restore pending={}, active={}",
                 pendingOrders.size(),
                 activePositions.size());
+    }
+
+    @PreDestroy
+    public void shutdownTestVolatilityExecutor() {
+        testVolatilityTasks.values().forEach(task -> task.cancel(true));
+        testVolatilityExecutor.shutdownNow();
     }
 
     private void migrateLegacyPositionIfNeeded(ManagedPositionEntity position) {
@@ -465,6 +480,12 @@ public class ManagedTradeService {
         return managedPositionRepository.findAllByUserIdAndStatusOrderByOpenedAtDesc(userId, ManagedPositionStatus.ACTIVE);
     }
 
+    private boolean isActiveManagedPosition(ManagedPositionEntity position) {
+        return position != null
+                && (position.getStatus() == ManagedPositionStatus.ACTIVE
+                || position.getStatus() == ManagedPositionStatus.ACTIVE_MANAGED);
+    }
+
     private void importUnmanagedExchangePositions(Long userId) {
         List<PositionRisk> exchangePositions;
         try {
@@ -688,6 +709,83 @@ public class ManagedTradeService {
         return position(position.getId());
     }
 
+    public ManagedPositionEntity startTestVolatility(Long userId, Long id, String direction) {
+        ManagedPositionEntity position = position(userId, id);
+        if (!position.isTestOrder()) {
+            throw new IllegalArgumentException("테스트 포지션만 변동성 테스트를 실행할 수 있습니다.");
+        }
+        if (!isActiveManagedPosition(position)) {
+            throw new IllegalArgumentException("ACTIVE 상태의 테스트 포지션만 변동성 테스트를 실행할 수 있습니다.");
+        }
+        boolean upward = "UP".equalsIgnoreCase(direction) || "UPWARD".equalsIgnoreCase(direction);
+        boolean downward = "DOWN".equalsIgnoreCase(direction) || "DOWNWARD".equalsIgnoreCase(direction);
+        if (!upward && !downward) {
+            throw new IllegalArgumentException("direction은 UP 또는 DOWN만 지원합니다.");
+        }
+        ScheduledFuture<?> previous = testVolatilityTasks.remove(position.getId());
+        if (previous != null) {
+            previous.cancel(false);
+        }
+        ScheduledFuture<?> task = testVolatilityExecutor.scheduleAtFixedRate(
+                () -> emitTestVolatilityTick(position.getId(), upward),
+                0,
+                1,
+                TimeUnit.SECONDS
+        );
+        testVolatilityTasks.put(position.getId(), task);
+        log.info("test volatility started positionId={}, symbol={}, direction={}, basePrice={}",
+                position.getId(), position.getSymbol(), upward ? "UP" : "DOWN",
+                position.getCurrentPrice() == null ? position.getEntryPrice() : position.getCurrentPrice());
+        return position;
+    }
+
+    public ManagedPositionEntity stopTestVolatility(Long userId, Long id) {
+        ManagedPositionEntity position = position(userId, id);
+        stopTestVolatility(position.getId());
+        log.info("test volatility stopped positionId={}, symbol={}", position.getId(), position.getSymbol());
+        return position(position.getId());
+    }
+
+    private void emitTestVolatilityTick(Long positionId, boolean upward) {
+        try {
+            ManagedPositionEntity position = managedPositionRepository.findById(positionId).orElse(null);
+            if (position == null || !position.isTestOrder() || !isActiveManagedPosition(position)) {
+                stopTestVolatility(positionId);
+                return;
+            }
+            BigDecimal basePrice = position.getCurrentPrice() == null || position.getCurrentPrice().signum() <= 0
+                    ? position.getEntryPrice()
+                    : position.getCurrentPrice();
+            if (basePrice == null || basePrice.signum() <= 0) {
+                stopTestVolatility(positionId);
+                return;
+            }
+            BigDecimal percent = BigDecimal.valueOf(ThreadLocalRandom.current().nextDouble(0.1, 1.0))
+                    .divide(new BigDecimal("100"), 10, RoundingMode.HALF_UP);
+            BigDecimal nextPrice = upward
+                    ? basePrice.multiply(BigDecimal.ONE.add(percent))
+                    : basePrice.multiply(BigDecimal.ONE.subtract(percent));
+            log.info("test volatility tick positionId={}, symbol={}, direction={}, basePrice={}, nextPrice={}, movePercent={}",
+                    positionId, position.getSymbol(), upward ? "UP" : "DOWN", basePrice, nextPrice,
+                    percent.multiply(new BigDecimal("100")));
+            evaluatePositionOnce(position, nextPrice);
+            ManagedPositionEntity latest = managedPositionRepository.findById(positionId).orElse(null);
+            if (latest == null || !isActiveManagedPosition(latest)) {
+                stopTestVolatility(positionId);
+            }
+        } catch (RuntimeException error) {
+            stopTestVolatility(positionId);
+            log.warn("test volatility stopped by error positionId={}", positionId, error);
+        }
+    }
+
+    private void stopTestVolatility(Long positionId) {
+        ScheduledFuture<?> task = testVolatilityTasks.remove(positionId);
+        if (task != null) {
+            task.cancel(false);
+        }
+    }
+
     @Transactional(readOnly = true)
     public List<ManagedStopHistoryEntity> stopHistory(Long userId, Long positionId) {
         position(userId, positionId);
@@ -792,8 +890,19 @@ public class ManagedTradeService {
                 .stream()
                 .filter(pending -> testEntryReached(pending, event.price()))
                 .forEach(pending -> openTestPosition(pending, event.price()));
-        managedPositionRepository.findAllBySymbolAndStatus(event.symbol(), ManagedPositionStatus.ACTIVE)
+        managedPositionRepository.findAllByStatusInOrderByOpenedAtDesc(
+                        List.of(ManagedPositionStatus.ACTIVE, ManagedPositionStatus.ACTIVE_MANAGED))
+                .stream()
+                .filter(position -> event.symbol().equalsIgnoreCase(position.getSymbol()))
+                .filter(position -> !isRunningTestVolatility(position))
                 .forEach(position -> evaluatePositionOnce(position, event.price()));
+    }
+
+    private boolean isRunningTestVolatility(ManagedPositionEntity position) {
+        return position != null
+                && position.isTestOrder()
+                && position.getId() != null
+                && testVolatilityTasks.containsKey(position.getId());
     }
 
     private void evaluatePositionOnce(ManagedPositionEntity position, BigDecimal currentPrice) {
@@ -814,7 +923,7 @@ public class ManagedTradeService {
         }
         try {
             ManagedPositionEntity latest = managedPositionRepository.findById(position.getId()).orElse(null);
-            if (latest == null || latest.getStatus() != ManagedPositionStatus.ACTIVE) {
+            if (latest == null || !isActiveManagedPosition(latest)) {
                 log.debug("managed close skipped positionId={}, symbol={}, status={}, closeSkippedReason=POSITION_NOT_ACTIVE",
                         position.getId(), position.getSymbol(), latest == null ? null : latest.getStatus());
                 return;
@@ -933,7 +1042,7 @@ public class ManagedTradeService {
     }
 
     private void evaluatePosition(ManagedPositionEntity position, BigDecimal currentPrice) {
-        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+        if (!isActiveManagedPosition(position)) {
             logRaiseStopEvaluation(position, currentPrice, null, null, null,
                     false, false, "POSITION_NOT_ACTIVE");
             return;
@@ -1160,7 +1269,7 @@ public class ManagedTradeService {
     }
 
     private void closePosition(ManagedPositionEntity position, ManagedPositionCloseReason reason) {
-        if (position.getStatus() != ManagedPositionStatus.ACTIVE) {
+        if (!isActiveManagedPosition(position)) {
             log.info("managed close skipped positionId={}, symbol={}, status={}, closeSkippedReason=POSITION_NOT_ACTIVE",
                     position.getId(), position.getSymbol(), position.getStatus());
             return;
