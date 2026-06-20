@@ -91,8 +91,14 @@ public class ManagedTradeService {
     @PostConstruct
     @Transactional
     public void restoreStreams() {
-        List<ManagedPositionEntity> activePositions = managedPositionRepository.findAllByStatusOrderByOpenedAtDesc(ManagedPositionStatus.ACTIVE);
+        List<ManagedPositionEntity> activePositions = managedPositionRepository.findAllByStatusInOrderByOpenedAtDesc(
+                List.of(ManagedPositionStatus.ACTIVE, ManagedPositionStatus.ACTIVE_MANAGED));
         activePositions.forEach(this::migrateLegacyPositionIfNeeded);
+        activePositions.stream()
+                .map(ManagedPositionEntity::getUserId)
+                .filter(userId -> userId != null)
+                .distinct()
+                .forEach(this::synchronizeExchangePositions);
         List<PendingOrderEntity> pendingOrders = pendingOrderRepository.findAllByStatusOrderByCreatedAtDesc(PendingOrderStatus.PENDING);
         pendingOrders.forEach(this::repairPendingSizingIfNeeded);
         pendingOrders.forEach(this::normalizePendingPolicyIfNeeded);
@@ -476,30 +482,66 @@ public class ManagedTradeService {
 
     @Transactional
     public List<ManagedPositionEntity> activePositions(Long userId) {
-        importUnmanagedExchangePositions(userId);
-        return managedPositionRepository.findAllByUserIdAndStatusOrderByOpenedAtDesc(userId, ManagedPositionStatus.ACTIVE);
+        synchronizeExchangePositions(userId);
+        return managedPositionRepository.findAllByUserIdAndStatusInOrderByOpenedAtDesc(userId,
+                List.of(
+                        ManagedPositionStatus.ACTIVE,
+                        ManagedPositionStatus.ACTIVE_MANAGED
+                ));
     }
 
-    private boolean isActiveManagedPosition(ManagedPositionEntity position) {
-        return position != null
-                && (position.getStatus() == ManagedPositionStatus.ACTIVE
-                || position.getStatus() == ManagedPositionStatus.ACTIVE_MANAGED);
-    }
-
-    private void importUnmanagedExchangePositions(Long userId) {
+    private void synchronizeExchangePositions(Long userId) {
         List<PositionRisk> exchangePositions;
         try {
             exchangePositions = clientService.getPositions();
         } catch (RuntimeException error) {
-            log.warn("unmanaged Binance position import skipped userId={}", userId, error);
+            log.warn("Binance position sync skipped userId={}", userId, error);
             return;
         }
-        exchangePositions.stream()
+
+        Map<String, PositionRisk> actualPositions = exchangePositions.stream()
                 .filter(position -> position.getPositionAmt() != null && position.getPositionAmt().signum() != 0)
-                .forEach(position -> importUnmanagedExchangePosition(userId, position));
+                .filter(position -> position.getSymbol() != null && !position.getSymbol().isBlank())
+                .collect(Collectors.toMap(
+                        position -> position.getSymbol().toUpperCase(Locale.ROOT),
+                        position -> position,
+                        (left, right) -> left
+                ));
+
+        List<ManagedPositionEntity> trackedRealPositions = managedPositionRepository.findAllByUserIdAndStatusInOrderByOpenedAtDesc(
+                        userId,
+                        List.of(
+                                ManagedPositionStatus.ACTIVE,
+                                ManagedPositionStatus.ACTIVE_MANAGED,
+                                ManagedPositionStatus.EXTERNAL_UNMANAGED,
+                                ManagedPositionStatus.NEEDS_CONFIGURATION,
+                                ManagedPositionStatus.CLOSING
+                        ))
+                .stream()
+                .filter(position -> position.getExecutionMode() == TradeExecutionMode.REAL)
+                .toList();
+
+        trackedRealPositions.forEach(position -> synchronizeTrackedPosition(position, actualPositions));
+        actualPositions.values().forEach(position -> importMissingExchangePosition(userId, position));
+        log.info("Binance position sync completed userId={}, exchangeActiveCount={}, trackedRealCount={}",
+                userId, actualPositions.size(), trackedRealPositions.size());
     }
 
-    private void importUnmanagedExchangePosition(Long userId, PositionRisk exchangePosition) {
+    private void synchronizeTrackedPosition(ManagedPositionEntity position, Map<String, PositionRisk> actualPositions) {
+        PositionRisk actual = actualPositions.get(position.getSymbol().toUpperCase(Locale.ROOT));
+        if (actual == null || !sameDirection(position, actual)) {
+            closePositionMissingOnExchange(position);
+            return;
+        }
+        position.updateExternalMarket(actual);
+        position.appendEvent("BINANCE_POSITION_SYNCED source=BINANCE_SYNC, currentPrice=" + position.getCurrentPrice()
+                + ", unrealizedPnl=" + position.getUnrealizedPnl()
+                + ", quantity=" + position.getQuantity());
+        managedPositionRepository.save(position);
+        monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+    }
+
+    private void importMissingExchangePosition(Long userId, PositionRisk exchangePosition) {
         if (exchangePosition.getSymbol() == null || exchangePosition.getSymbol().isBlank()) {
             return;
         }
@@ -509,27 +551,67 @@ public class ManagedTradeService {
             return;
         }
         try {
-            boolean alreadyManaged = managedPositionRepository.existsByUserIdAndSymbolAndStatusInAndExecutionMode(
+            boolean alreadyTracked = managedPositionRepository.findAllByUserIdAndSymbolAndStatusInAndExecutionMode(
                     userId,
                     symbol,
-                    List.of(ManagedPositionStatus.ACTIVE, ManagedPositionStatus.CLOSING),
+                    List.of(
+                            ManagedPositionStatus.ACTIVE,
+                            ManagedPositionStatus.ACTIVE_MANAGED,
+                            ManagedPositionStatus.EXTERNAL_UNMANAGED,
+                            ManagedPositionStatus.NEEDS_CONFIGURATION,
+                            ManagedPositionStatus.CLOSING
+                    ),
                     TradeExecutionMode.REAL
-            );
-            if (alreadyManaged) {
+            ).stream().anyMatch(position -> sameDirection(position, exchangePosition));
+            if (alreadyTracked) {
                 return;
             }
+            log.warn("external Binance position detected userId={}, symbol={}, positionAmt={}, source=BINANCE_SYNC, localManagedExists=false, statusAssigned=ACTIVE_MANAGED",
+                    userId, symbol, exchangePosition.getPositionAmt());
             ManagedPositionEntity imported = managedPositionRepository.save(
                     ManagedPositionEntity.fromExternalPosition(userId, exchangePosition)
             );
             multiPlexManager.subscribeMarkPrice(imported.getSymbol());
             monitorService.pushPositionUpdate(imported.getUserId(), imported.getSymbol(), ManagedPositionResponseDto.from(imported));
-            log.warn("unmanaged Binance position imported id={}, userId={}, symbol={}, side={}, entryPrice={}, currentPrice={}, quantity={}, leverage={}, mode={}, raiseTrigger={}%, raiseProtection={}%",
+            log.warn("external Binance position imported id={}, userId={}, symbol={}, side={}, entryPrice={}, currentPrice={}, quantity={}, leverage={}, status={}, defaultPolicy=PNL_1_PERCENT_FIXED_TP_SL",
                     imported.getId(), userId, imported.getSymbol(), imported.getEntrySide(),
                     imported.getEntryPrice(), imported.getCurrentPrice(), imported.getQuantity(), imported.getLeverage(),
-                    imported.getMode(), imported.getRaiseTriggerValue(), imported.getRaiseStopValue());
+                    imported.getStatus());
         } finally {
             importingExternalPositionKeys.remove(importKey);
         }
+    }
+
+    private void closePositionMissingOnExchange(ManagedPositionEntity position) {
+        if (position.getStatus() != ManagedPositionStatus.ACTIVE
+                && position.getStatus() != ManagedPositionStatus.ACTIVE_MANAGED
+                && position.getStatus() != ManagedPositionStatus.EXTERNAL_UNMANAGED
+                && position.getStatus() != ManagedPositionStatus.NEEDS_CONFIGURATION
+                && position.getStatus() != ManagedPositionStatus.CLOSING) {
+            return;
+        }
+        BigDecimal closePrice = position.getCurrentPrice() == null ? position.getEntryPrice() : position.getCurrentPrice();
+        position.appendEvent("MANAGED_POSITION_MISSING_ON_EXCHANGE source=BINANCE_SYNC, lastCurrentPrice=" + closePrice
+                + ", lastUnrealizedPnl=" + position.getUnrealizedPnl());
+        position.markClosing(null, ManagedPositionCloseReason.POSITION_NOT_FOUND_ON_EXCHANGE);
+        position.markClosed(calculatePnl(position, closePrice), closePrice);
+        managedPositionRepository.save(position);
+        monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
+        log.warn("managed position closed because Binance position is missing id={}, userId={}, symbol={}, side={}, closePrice={}, reason={}",
+                position.getId(), position.getUserId(), position.getSymbol(), position.getEntrySide(), closePrice,
+                ManagedPositionCloseReason.POSITION_NOT_FOUND_ON_EXCHANGE);
+    }
+
+    private boolean isExternalPosition(ManagedPositionEntity position) {
+        return position != null
+                && (position.getStatus() == ManagedPositionStatus.EXTERNAL_UNMANAGED
+                || position.getStatus() == ManagedPositionStatus.NEEDS_CONFIGURATION);
+    }
+
+    private boolean isActiveManagedPosition(ManagedPositionEntity position) {
+        return position != null
+                && (position.getStatus() == ManagedPositionStatus.ACTIVE
+                || position.getStatus() == ManagedPositionStatus.ACTIVE_MANAGED);
     }
 
     public List<ManagedPositionEntity> positionHistory(Long userId, String symbol, String side, ManagedOrderMode mode,
