@@ -1071,7 +1071,7 @@ public class ManagedTradeService {
             log.debug("raising stop inspect id={}, symbol={}, mode={}, initialStop={}, currentStop={}, price={}, pnl={}, raiseActivated={}",
                     position.getId(), position.getSymbol(), position.getMode(), position.getInitialStopPrice(),
                     position.getCurrentStopPrice(), currentPrice, pnl, raiseActivated);
-            raisePlan = ManagedRaiseStopCalculator.calculate(position);
+            raisePlan = ManagedRaiseStopCalculator.calculate(position, currentPrice, pnl);
             if (raisePlan == null) {
                 stopUpdateRejectedReason = "INVALID_CALCULATION";
             } else {
