@@ -16,10 +16,12 @@ import st.indicator.stindicator.infra.connector.entity.ManagedPositionEntity;
 import st.indicator.stindicator.infra.connector.entity.ManagedPositionJournalEntity;
 import st.indicator.stindicator.infra.connector.entity.ManagedStopHistoryEntity;
 import st.indicator.stindicator.infra.connector.entity.PendingOrderEntity;
+import st.indicator.stindicator.infra.connector.entity.UserEntity;
 import st.indicator.stindicator.infra.connector.repository.ManagedPositionJpaRepository;
 import st.indicator.stindicator.infra.connector.repository.ManagedPositionJournalJpaRepository;
 import st.indicator.stindicator.infra.connector.repository.ManagedStopHistoryJpaRepository;
 import st.indicator.stindicator.infra.connector.repository.PendingOrderJpaRepository;
+import st.indicator.stindicator.infra.connector.repository.UserJpaRepository;
 import st.indicator.stindicator.infra.ws.MultiPlexManager;
 import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
@@ -29,6 +31,7 @@ import st.indicator.stindicator.presentation.dto.StartManagedPositionRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionModeRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
+import st.indicator.stindicator.presentation.ws.publisher.AccountPositionUpdateEvent;
 import st.indicator.stindicator.presentation.ws.publisher.OrderTradeUpdateEvent;
 import st.indicator.stindicator.presentation.ws.publisher.PriceTickEvent;
 
@@ -58,6 +61,7 @@ public class ManagedTradeService {
     private final ManagedPositionJpaRepository managedPositionRepository;
     private final ManagedPositionJournalJpaRepository managedPositionJournalRepository;
     private final ManagedStopHistoryJpaRepository managedStopHistoryRepository;
+    private final UserJpaRepository userRepository;
     private final MultiPlexManager multiPlexManager;
     private final MonitorService monitorService;
     private final Set<Long> closingPositionIds = ConcurrentHashMap.newKeySet();
@@ -77,6 +81,7 @@ public class ManagedTradeService {
                                ManagedPositionJpaRepository managedPositionRepository,
                                ManagedPositionJournalJpaRepository managedPositionJournalRepository,
                                ManagedStopHistoryJpaRepository managedStopHistoryRepository,
+                               UserJpaRepository userRepository,
                                MultiPlexManager multiPlexManager,
                                MonitorService monitorService) {
         this.clientService = clientService;
@@ -85,6 +90,7 @@ public class ManagedTradeService {
         this.managedPositionRepository = managedPositionRepository;
         this.managedPositionJournalRepository = managedPositionJournalRepository;
         this.managedStopHistoryRepository = managedStopHistoryRepository;
+        this.userRepository = userRepository;
         this.multiPlexManager = multiPlexManager;
         this.monitorService = monitorService;
     }
@@ -990,6 +996,57 @@ public class ManagedTradeService {
         if (ownerUserId == null || sessionUserId == null || !ownerUserId.equals(sessionUserId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "요청한 사용자의 데이터가 아닙니다.");
         }
+    }
+
+    @EventListener
+    @Transactional
+    public void handleAccountPositionUpdate(AccountPositionUpdateEvent event) {
+        if (event == null || !event.hasSymbols()) {
+            return;
+        }
+        Long userId = exchangeAutoManageUserId();
+        if (userId == null) {
+            log.warn("external Binance position auto-manage skipped symbols={}, reason=NO_UNAMBIGUOUS_APPLICATION_USER",
+                    event.symbols());
+            return;
+        }
+        List<PositionRisk> actualPositions;
+        try {
+            actualPositions = clientService.getPositions();
+        } catch (RuntimeException error) {
+            log.warn("external Binance position auto-manage skipped symbols={}, reason=POSITION_FETCH_FAILED",
+                    event.symbols(), error);
+            return;
+        }
+        Set<String> eventSymbols = event.symbols().stream()
+                .filter(symbol -> symbol != null && !symbol.isBlank())
+                .map(symbol -> symbol.toUpperCase(Locale.ROOT))
+                .collect(Collectors.toSet());
+        List<PositionRisk> activeEventPositions = actualPositions.stream()
+                .filter(position -> position.getSymbol() != null
+                        && eventSymbols.contains(position.getSymbol().toUpperCase(Locale.ROOT)))
+                .filter(position -> position.getPositionAmt() != null && position.getPositionAmt().signum() != 0)
+                .toList();
+        if (activeEventPositions.isEmpty()) {
+            log.info("external Binance position auto-manage found no active position symbols={}, reason={}",
+                    eventSymbols, event.reason());
+            return;
+        }
+        activeEventPositions.forEach(position -> autoStartRaisingStopForExchangePosition(userId, position));
+    }
+
+    private Long exchangeAutoManageUserId() {
+        List<UserEntity> users = userRepository.findAll();
+        if (users.size() == 1) {
+            return users.get(0).getId();
+        }
+        if (users.isEmpty()) {
+            log.warn("Binance user data stream position update cannot be mapped because no application user exists");
+        } else {
+            log.warn("Binance user data stream position update cannot be mapped because application users size={}",
+                    users.size());
+        }
+        return null;
     }
 
     @EventListener

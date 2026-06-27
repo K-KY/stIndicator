@@ -13,12 +13,16 @@ import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.websocket.WebsocketOutbound;
+import st.indicator.stindicator.presentation.ws.publisher.AccountPositionUpdateEvent;
 import st.indicator.stindicator.presentation.ws.publisher.OrderTradeUpdateEvent;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -235,7 +239,15 @@ public class BinanceUserDataStreamManager {
         }
         try {
             JsonNode root = objectMapper.readTree(message);
-            if (!root.has("e") || !"ORDER_TRADE_UPDATE".equals(root.get("e").asText())) {
+            if (!root.has("e")) {
+                return;
+            }
+            String eventType = root.get("e").asText();
+            if ("ACCOUNT_UPDATE".equals(eventType)) {
+                publishAccountPositionUpdate(root);
+                return;
+            }
+            if (!"ORDER_TRADE_UPDATE".equals(eventType)) {
                 return;
             }
             JsonNode order = root.get("o");
@@ -259,6 +271,34 @@ public class BinanceUserDataStreamManager {
         } catch (RuntimeException e) {
             log.warn("binance user data stream parse failed payload={}", message, e);
         }
+    }
+
+    private void publishAccountPositionUpdate(JsonNode root) {
+        JsonNode account = root.get("a");
+        if (account == null || account.isNull()) {
+            return;
+        }
+        JsonNode positions = account.get("P");
+        if (positions == null || !positions.isArray()) {
+            return;
+        }
+        Set<String> symbols = new LinkedHashSet<>();
+        for (JsonNode position : positions) {
+            String symbol = text(position, "s");
+            if (symbol != null && !symbol.isBlank()) {
+                symbols.add(symbol.toUpperCase(Locale.ROOT));
+            }
+        }
+        if (symbols.isEmpty()) {
+            return;
+        }
+        AccountPositionUpdateEvent event = new AccountPositionUpdateEvent(
+                symbols,
+                text(account, "m"),
+                longValue(root, "E"),
+                longValue(root, "T")
+        );
+        eventPublisher.publishEvent(event);
     }
 
     private String text(JsonNode node, String fieldName) {
