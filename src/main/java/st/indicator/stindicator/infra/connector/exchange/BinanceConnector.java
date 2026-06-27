@@ -1,6 +1,8 @@
 package st.indicator.stindicator.infra.connector.exchange;
 
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import st.indicator.stindicator.application.service.ExchangeConnector;
 import st.indicator.stindicator.domain.entity.AssetBalance;
 import st.indicator.stindicator.domain.entity.ExchangeSymbol;
@@ -26,12 +28,14 @@ import java.util.Locale;
 
 @Component
 public class BinanceConnector implements ExchangeConnector {
+    private static final Logger log = LoggerFactory.getLogger(BinanceConnector.class);
     private static final String ACCOUNT_PATH = "https://fapi.binance.com/fapi/v3/account";
     private static final String TOTAL_WALLET_BALANCE = "totalWalletBalance";
     private static final String CANDLE_PATH = "https://fapi.binance.com/fapi/v1/klines";
     private static final String ORDER_PATH = "https://fapi.binance.com/fapi/v1/order";
     private static final String LEVERAGE_PATH = "https://fapi.binance.com/fapi/v1/leverage";
-    private static final String POSITION_RISK_PATH = "https://fapi.binance.com/fapi/v2/positionRisk";
+    private static final String POSITION_RISK_PATH = "https://fapi.binance.com/fapi/v3/positionRisk";
+    private static final String POSITION_RISK_V2_PATH = "https://fapi.binance.com/fapi/v2/positionRisk";
     private static final String EXCHANGE_INFO_PATH = "https://fapi.binance.com/fapi/v1/exchangeInfo";
     private static final String TICKER_24HR_PATH = "https://fapi.binance.com/fapi/v1/ticker/24hr";
     private static final String PRICE_PATH = "https://fapi.binance.com/fapi/v1/ticker/price";
@@ -96,8 +100,23 @@ public class BinanceConnector implements ExchangeConnector {
     @Override
     public List<PositionRisk> getPositions(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException {
-        String response = exchangeClient.get(POSITION_RISK_PATH, params);
-        JsonNode positionsNode = readSuccessTree(response, "position risk");
+        try {
+            List<PositionRisk> positions = getPositions(POSITION_RISK_PATH, params, "position risk v3");
+            log.info("Binance position risk v3 parsed activeCount={}", positions.size());
+            return positions;
+        } catch (RuntimeException | IOException error) {
+            log.warn("Binance position risk v3 failed, fallback to v2. reason={}", error.getMessage());
+            List<PositionRisk> positions = getPositions(POSITION_RISK_V2_PATH, params, "position risk v2");
+            log.info("Binance position risk v2 parsed activeCount={}", positions.size());
+            return positions;
+        }
+    }
+
+    private List<PositionRisk> getPositions(String path, Map<String, String> params, String operation)
+            throws IOException, NoSuchAlgorithmException, InvalidKeyException, InterruptedException {
+        String response = exchangeClient.get(path, params);
+        JsonNode root = readSuccessTree(response, operation);
+        JsonNode positionsNode = positionsNode(root, operation);
         List<PositionRisk> positions = new ArrayList<>();
         for (JsonNode positionNode : positionsNode) {
             BigDecimal positionAmt = decimal(positionNode, "positionAmt");
@@ -105,16 +124,33 @@ public class BinanceConnector implements ExchangeConnector {
                 continue;
             }
             positions.add(new PositionRisk(
-                    positionNode.get("symbol").asString(),
+                    requiredText(positionNode, "symbol", operation),
                     positionAmt,
                     decimal(positionNode, "entryPrice"),
                     decimal(positionNode, "markPrice"),
-                    decimal(positionNode, "unRealizedProfit"),
+                    decimalAny(positionNode, "unRealizedProfit", "unrealizedProfit"),
                     decimal(positionNode, "leverage"),
-                    positionNode.get("positionSide").asString()
+                    decimal(positionNode, "liquidationPrice"),
+                    decimalAny(positionNode, "notional", "notionalValue"),
+                    decimalAny(positionNode, "positionInitialMargin", "initialMargin", "isolatedWallet"),
+                    textOrDefault(positionNode, "positionSide", "BOTH")
             ));
         }
         return positions;
+    }
+
+    private JsonNode positionsNode(JsonNode root, String operation) {
+        if (root == null) {
+            throw new IllegalStateException("Binance " + operation + " response is empty");
+        }
+        if (root.isArray()) {
+            return root;
+        }
+        JsonNode positions = root.get("positions");
+        if (positions != null && positions.isArray()) {
+            return positions;
+        }
+        throw new IllegalStateException("Binance " + operation + " response must be an array or contain positions array");
     }
 
     @Override
@@ -254,6 +290,24 @@ public class BinanceConnector implements ExchangeConnector {
         return new BigDecimal(valueNode.asString());
     }
 
+    private BigDecimal decimalAny(JsonNode node, String... fieldNames) {
+        for (String fieldName : fieldNames) {
+            JsonNode valueNode = node.get(fieldName);
+            if (valueNode != null && !valueNode.isNull()) {
+                return new BigDecimal(valueNode.asString());
+            }
+        }
+        return BigDecimal.ZERO;
+    }
+
+    private String textOrDefault(JsonNode node, String fieldName, String defaultValue) {
+        JsonNode valueNode = node.get(fieldName);
+        if (valueNode == null || valueNode.isNull()) {
+            return defaultValue;
+        }
+        return valueNode.asString();
+    }
+
     private JsonNode readSuccessTree(String response, String operation) throws IOException {
         JsonNode root = objectMapper.readTree(response);
         throwIfBinanceError(root, operation);
@@ -308,10 +362,14 @@ public class BinanceConnector implements ExchangeConnector {
         }
         Map<String, TickerSummary> summaries = new HashMap<>();
         for (JsonNode tickerNode : tickerRoot) {
-            String symbol = requiredText(tickerNode, "symbol", "24hr ticker").toUpperCase(Locale.ROOT);
+            String symbol = textOrDefault(tickerNode, "symbol", "").toUpperCase(Locale.ROOT);
+            if (symbol.isBlank()) {
+                log.warn("Binance 24hr ticker row skipped because symbol is missing row={}", tickerNode);
+                continue;
+            }
             summaries.put(symbol, new TickerSummary(
-                    requiredDecimal(tickerNode, "quoteVolume", "24hr ticker"),
-                    requiredDecimal(tickerNode, "lastPrice", "24hr ticker")
+                    decimalAny(tickerNode, "quoteVolume", "quoteVolumeAsset", "volume"),
+                    decimalAny(tickerNode, "lastPrice", "price", "closePrice")
             ));
         }
         return summaries;

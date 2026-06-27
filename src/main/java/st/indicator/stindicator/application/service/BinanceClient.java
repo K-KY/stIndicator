@@ -194,7 +194,10 @@ public class BinanceClient implements ClientService {
         long currentTimeMillis = System.currentTimeMillis();
         log.info("flow getPositions start timestamp={}", currentTimeMillis);
         try {
-            List<PositionRisk> positions = exchangeConnector.getPositions(Map.of("timestamp", String.valueOf(currentTimeMillis)));
+            List<PositionRisk> positions = exchangeConnector.getPositions(Map.of(
+                    "timestamp", String.valueOf(currentTimeMillis),
+                    "recvWindow", "5000"
+            ));
             log.info("flow getPositions done count={}, taken={}", positions.size(), System.currentTimeMillis() - currentTimeMillis);
             return positions;
         } catch (IOException | NoSuchAlgorithmException | InvalidKeyException | InterruptedException e) {

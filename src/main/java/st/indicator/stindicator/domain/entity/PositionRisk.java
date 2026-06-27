@@ -13,17 +13,43 @@ public class PositionRisk {
     private final BigDecimal markPrice;
     private final BigDecimal unrealizedProfit;
     private final BigDecimal leverage;
+    private final BigDecimal liquidationPrice;
+    private final BigDecimal notional;
+    private final BigDecimal positionInitialMargin;
     private final String positionSide;
 
     public PositionRisk(String symbol, BigDecimal positionAmt, BigDecimal entryPrice,
                         BigDecimal markPrice, BigDecimal unrealizedProfit,
                         BigDecimal leverage, String positionSide) {
+        this(symbol, positionAmt, entryPrice, markPrice, unrealizedProfit, leverage, null, null, null, positionSide);
+    }
+
+    public PositionRisk(String symbol, BigDecimal positionAmt, BigDecimal entryPrice,
+                        BigDecimal markPrice, BigDecimal unrealizedProfit,
+                        BigDecimal leverage, BigDecimal liquidationPrice, String positionSide) {
+        this(symbol, positionAmt, entryPrice, markPrice, unrealizedProfit, leverage, liquidationPrice, null, null, positionSide);
+    }
+
+    public PositionRisk(String symbol, BigDecimal positionAmt, BigDecimal entryPrice,
+                        BigDecimal markPrice, BigDecimal unrealizedProfit,
+                        BigDecimal leverage, BigDecimal liquidationPrice,
+                        BigDecimal notional, String positionSide) {
+        this(symbol, positionAmt, entryPrice, markPrice, unrealizedProfit, leverage, liquidationPrice, notional, null, positionSide);
+    }
+
+    public PositionRisk(String symbol, BigDecimal positionAmt, BigDecimal entryPrice,
+                        BigDecimal markPrice, BigDecimal unrealizedProfit,
+                        BigDecimal leverage, BigDecimal liquidationPrice,
+                        BigDecimal notional, BigDecimal positionInitialMargin, String positionSide) {
         this.symbol = symbol;
         this.positionAmt = positionAmt;
         this.entryPrice = entryPrice;
         this.markPrice = markPrice;
         this.unrealizedProfit = unrealizedProfit;
         this.leverage = leverage;
+        this.liquidationPrice = liquidationPrice;
+        this.notional = notional;
+        this.positionInitialMargin = positionInitialMargin;
         this.positionSide = positionSide;
     }
 
@@ -49,6 +75,18 @@ public class PositionRisk {
 
     public BigDecimal getLeverage() {
         return leverage;
+    }
+
+    public BigDecimal getLiquidationPrice() {
+        return liquidationPrice;
+    }
+
+    public BigDecimal getNotional() {
+        return notional;
+    }
+
+    public BigDecimal getPositionInitialMargin() {
+        return positionInitialMargin;
     }
 
     public String getPositionSide() {
