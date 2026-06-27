@@ -25,6 +25,7 @@ import st.indicator.stindicator.presentation.dto.ManagedAtrOrderRequestDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedPositionJournalRequestDto;
 import st.indicator.stindicator.presentation.dto.AddRaisingStopRequestDto;
+import st.indicator.stindicator.presentation.dto.StartManagedPositionRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionModeRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
@@ -63,8 +64,8 @@ public class ManagedTradeService {
     private final Set<Long> fillingPendingOrderIds = ConcurrentHashMap.newKeySet();
     private final Set<Long> fillingTestOrderIds = ConcurrentHashMap.newKeySet();
     private final Set<Long> evaluatingPositionIds = ConcurrentHashMap.newKeySet();
-    private final Set<String> importingExternalPositionKeys = ConcurrentHashMap.newKeySet();
     private final Set<String> recordedStopUpdates = ConcurrentHashMap.newKeySet();
+    private final Set<String> autoManagingExchangePositions = ConcurrentHashMap.newKeySet();
     private final ScheduledExecutorService testVolatilityExecutor = Executors.newScheduledThreadPool(2);
     private final Map<Long, ScheduledFuture<?>> testVolatilityTasks = new ConcurrentHashMap<>();
     private final Map<String, ManagedOrderSymbolRule> orderRuleCache = new ConcurrentHashMap<>();
@@ -484,10 +485,7 @@ public class ManagedTradeService {
     public List<ManagedPositionEntity> activePositions(Long userId) {
         synchronizeExchangePositions(userId);
         return managedPositionRepository.findAllByUserIdAndStatusInOrderByOpenedAtDesc(userId,
-                List.of(
-                        ManagedPositionStatus.ACTIVE,
-                        ManagedPositionStatus.ACTIVE_MANAGED
-                ));
+                List.of(ManagedPositionStatus.ACTIVE_MANAGED));
     }
 
     private void synchronizeExchangePositions(Long userId) {
@@ -513,8 +511,6 @@ public class ManagedTradeService {
                         List.of(
                                 ManagedPositionStatus.ACTIVE,
                                 ManagedPositionStatus.ACTIVE_MANAGED,
-                                ManagedPositionStatus.EXTERNAL_UNMANAGED,
-                                ManagedPositionStatus.NEEDS_CONFIGURATION,
                                 ManagedPositionStatus.CLOSING
                         ))
                 .stream()
@@ -522,7 +518,6 @@ public class ManagedTradeService {
                 .toList();
 
         trackedRealPositions.forEach(position -> synchronizeTrackedPosition(position, actualPositions));
-        actualPositions.values().forEach(position -> importMissingExchangePosition(userId, position));
         log.info("Binance position sync completed userId={}, exchangeActiveCount={}, trackedRealCount={}",
                 userId, actualPositions.size(), trackedRealPositions.size());
     }
@@ -541,52 +536,160 @@ public class ManagedTradeService {
         monitorService.pushPositionUpdate(position.getUserId(), position.getSymbol(), ManagedPositionResponseDto.from(position));
     }
 
-    private void importMissingExchangePosition(Long userId, PositionRisk exchangePosition) {
-        if (exchangePosition.getSymbol() == null || exchangePosition.getSymbol().isBlank()) {
-            return;
+    @Transactional
+    public List<PositionRisk> unmanagedExchangePositions(Long userId) {
+        log.info("unmanaged Binance positions refresh requested userId={}, source=BINANCE_API", userId);
+        synchronizeExchangePositions(userId);
+        List<PositionRisk> exchangePositions = clientService.getPositions();
+        List<ManagedPositionEntity> trackedRealPositions = managedPositionRepository.findAllByUserIdAndStatusInOrderByOpenedAtDesc(
+                        userId,
+                        List.of(ManagedPositionStatus.ACTIVE_MANAGED))
+                .stream()
+                .filter(position -> position.getExecutionMode() == TradeExecutionMode.REAL)
+                .toList();
+        List<PositionRisk> unmanagedPositions = exchangePositions.stream()
+                .filter(position -> position.getPositionAmt() != null && position.getPositionAmt().signum() != 0)
+                .filter(position -> trackedRealPositions.stream().noneMatch(tracked -> sameDirection(tracked, position)
+                        && tracked.getSymbol().equalsIgnoreCase(position.getSymbol())))
+                .toList();
+        log.info("unmanaged Binance positions resolved userId={}, exchangeActiveCount={}, activeManagedCount={}, unmanagedCount={}",
+                userId, exchangePositions.size(), trackedRealPositions.size(), unmanagedPositions.size());
+        return unmanagedPositions;
+    }
+
+    @Transactional
+    public ManagedPositionEntity startManagingExchangePosition(Long userId, StartManagedPositionRequestDto request) {
+        if (request == null || request.getSymbol() == null || request.getSymbol().isBlank()) {
+            throw new IllegalArgumentException("관리 시작할 심볼이 필요합니다.");
         }
-        String symbol = exchangePosition.getSymbol().toUpperCase(Locale.ROOT);
-        String importKey = userId + ":" + symbol;
-        if (!importingExternalPositionKeys.add(importKey)) {
-            return;
+        String symbol = request.getSymbol().toUpperCase(Locale.ROOT);
+        PositionRisk actual = clientService.getPositions().stream()
+                .filter(position -> position.getSymbol().equalsIgnoreCase(symbol))
+                .filter(position -> position.getPositionAmt() != null && position.getPositionAmt().signum() != 0)
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Binance에 실제 포지션이 없습니다."));
+        boolean alreadyManaged = managedPositionRepository.findAllByUserIdAndSymbolAndStatusInAndExecutionMode(
+                userId,
+                symbol,
+                List.of(ManagedPositionStatus.ACTIVE, ManagedPositionStatus.ACTIVE_MANAGED, ManagedPositionStatus.CLOSING),
+                TradeExecutionMode.REAL
+        ).stream().anyMatch(position -> sameDirection(position, actual));
+        if (alreadyManaged) {
+            throw new IllegalStateException("이미 서비스에서 관리중인 포지션입니다.");
+        }
+
+        ManagedPositionEntity position = ManagedPositionEntity.fromExternalPosition(userId, actual);
+        log.info("external Binance position management start userId={}, symbol={}, positionAmt={}, entryPrice={}, markPrice={}, leverage={}, notional={}, initialMargin={}, requiredMargin={}",
+                userId, actual.getSymbol(), actual.getPositionAmt(), actual.getEntryPrice(), actual.getMarkPrice(),
+                actual.getLeverage(), actual.getNotional(), actual.getPositionInitialMargin(), position.getRequiredMargin());
+        if (request.getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
+            position.switchToFixedTpSl(
+                    request.getStopTriggerBasis(),
+                    request.getStopValueType(),
+                    request.getStopValue(),
+                    request.getTakeProfitTriggerBasis(),
+                    request.getTakeProfitValueType(),
+                    request.getTakeProfitValue()
+            );
+            position.addRaisingStop(
+                    request.getRaiseTriggerBasis(),
+                    positiveOrNull(request.getRaiseTriggerValue(), "raiseTriggerValue"),
+                    request.getRaiseStopType(),
+                    positiveOrNull(request.getRaiseStopValue(), "raiseStopValue")
+            );
+        } else {
+            position.switchToFixedTpSl(
+                    request.getStopTriggerBasis(),
+                    request.getStopValueType(),
+                    request.getStopValue(),
+                    request.getTakeProfitTriggerBasis(),
+                    request.getTakeProfitValueType(),
+                    request.getTakeProfitValue()
+            );
+        }
+        ManagedPositionEntity saved = managedPositionRepository.save(position);
+        multiPlexManager.subscribeMarkPrice(saved.getSymbol());
+        monitorService.pushPositionUpdate(saved.getUserId(), saved.getSymbol(), ManagedPositionResponseDto.from(saved));
+        return saved;
+    }
+
+    private ManagedPositionEntity autoStartRaisingStopForExchangePosition(Long userId, PositionRisk actual) {
+        if (userId == null || actual == null || actual.getSymbol() == null || actual.getPositionAmt() == null
+                || actual.getPositionAmt().signum() == 0) {
+            return null;
+        }
+        String symbol = actual.getSymbol().toUpperCase(Locale.ROOT);
+        String side = actual.getPositionAmt().signum() > 0 ? "BUY" : "SELL";
+        String lockKey = userId + ":" + symbol + ":" + side;
+        if (!autoManagingExchangePositions.add(lockKey)) {
+            log.info("external Binance position auto-manage skipped userId={}, symbol={}, side={}, reason=ALREADY_IN_PROGRESS",
+                    userId, symbol, side);
+            return null;
         }
         try {
-            boolean alreadyTracked = managedPositionRepository.findAllByUserIdAndSymbolAndStatusInAndExecutionMode(
+            boolean alreadyManaged = managedPositionRepository.findAllByUserIdAndSymbolAndStatusInAndExecutionMode(
                     userId,
                     symbol,
-                    List.of(
-                            ManagedPositionStatus.ACTIVE,
-                            ManagedPositionStatus.ACTIVE_MANAGED,
-                            ManagedPositionStatus.EXTERNAL_UNMANAGED,
-                            ManagedPositionStatus.NEEDS_CONFIGURATION,
-                            ManagedPositionStatus.CLOSING
-                    ),
+                    List.of(ManagedPositionStatus.ACTIVE, ManagedPositionStatus.ACTIVE_MANAGED, ManagedPositionStatus.CLOSING),
                     TradeExecutionMode.REAL
-            ).stream().anyMatch(position -> sameDirection(position, exchangePosition));
-            if (alreadyTracked) {
-                return;
+            ).stream().anyMatch(position -> sameDirection(position, actual));
+            if (alreadyManaged) {
+                log.info("external Binance position auto-manage skipped userId={}, symbol={}, side={}, reason=ALREADY_MANAGED",
+                        userId, symbol, side);
+                return null;
             }
-            log.warn("external Binance position detected userId={}, symbol={}, positionAmt={}, source=BINANCE_SYNC, localManagedExists=false, statusAssigned=ACTIVE_MANAGED",
-                    userId, symbol, exchangePosition.getPositionAmt());
-            ManagedPositionEntity imported = managedPositionRepository.save(
-                    ManagedPositionEntity.fromExternalPosition(userId, exchangePosition)
+
+            ManagedPositionEntity position = ManagedPositionEntity.fromExternalPosition(userId, actual);
+            position.switchToFixedTpSl(
+                    TriggerBasis.PRICE_PERCENT,
+                    RaiseStopType.PERCENT,
+                    BigDecimal.ONE,
+                    TriggerBasis.PRICE_PERCENT,
+                    RaiseStopType.PERCENT,
+                    BigDecimal.ONE
             );
-            multiPlexManager.subscribeMarkPrice(imported.getSymbol());
-            monitorService.pushPositionUpdate(imported.getUserId(), imported.getSymbol(), ManagedPositionResponseDto.from(imported));
-            log.warn("external Binance position imported id={}, userId={}, symbol={}, side={}, entryPrice={}, currentPrice={}, quantity={}, leverage={}, status={}, defaultPolicy=PNL_1_PERCENT_FIXED_TP_SL",
-                    imported.getId(), userId, imported.getSymbol(), imported.getEntrySide(),
-                    imported.getEntryPrice(), imported.getCurrentPrice(), imported.getQuantity(), imported.getLeverage(),
-                    imported.getStatus());
+            position.addRaisingStop(
+                    TriggerBasis.PRICE_PERCENT,
+                    BigDecimal.ONE,
+                    RaiseStopType.PERCENT,
+                    new BigDecimal("50")
+            );
+            position.appendEvent("EXTERNAL_POSITION_AUTO_MANAGED source=USER_DATA_STREAM"
+                    + ", symbol=" + symbol
+                    + ", side=" + side
+                    + ", mode=RAISING_STOP_ONLY"
+                    + ", stopBasis=PRICE_PERCENT"
+                    + ", raiseTriggerValue=1"
+                    + ", raiseStopType=PERCENT"
+                    + ", raiseStopValue=50");
+            ManagedPositionEntity saved = managedPositionRepository.save(position);
+            multiPlexManager.subscribeMarkPrice(saved.getSymbol());
+            monitorService.pushPositionUpdate(saved.getUserId(), saved.getSymbol(), ManagedPositionResponseDto.from(saved));
+            log.info("external Binance position auto-managed userId={}, positionId={}, symbol={}, side={}, entryPrice={}, quantity={}, requiredMargin={}, mode={}, raiseTriggerValue={}, raiseStopType={}, raiseStopValue={}",
+                    userId, saved.getId(), saved.getSymbol(), side, saved.getEntryPrice(), saved.getQuantity(),
+                    saved.getRequiredMargin(), saved.getMode(), saved.getRaiseTriggerValue(),
+                    saved.getRaiseStopType(), saved.getRaiseStopValue());
+            return saved;
         } finally {
-            importingExternalPositionKeys.remove(importKey);
+            autoManagingExchangePositions.remove(lockKey);
         }
+    }
+
+    @Transactional
+    public ManagedPositionEntity stopManagingPosition(Long userId, Long id) {
+        ManagedPositionEntity position = position(userId, id);
+        if (!isActiveManagedPosition(position)) {
+            throw new IllegalArgumentException("관리중인 포지션만 관리 해제할 수 있습니다.");
+        }
+        position.markManagementStopped(calculatePnl(position, position.getCurrentPrice()), position.getCurrentPrice());
+        ManagedPositionEntity saved = managedPositionRepository.save(position);
+        monitorService.pushPositionUpdate(saved.getUserId(), saved.getSymbol(), ManagedPositionResponseDto.from(saved));
+        return saved;
     }
 
     private void closePositionMissingOnExchange(ManagedPositionEntity position) {
         if (position.getStatus() != ManagedPositionStatus.ACTIVE
                 && position.getStatus() != ManagedPositionStatus.ACTIVE_MANAGED
-                && position.getStatus() != ManagedPositionStatus.EXTERNAL_UNMANAGED
-                && position.getStatus() != ManagedPositionStatus.NEEDS_CONFIGURATION
                 && position.getStatus() != ManagedPositionStatus.CLOSING) {
             return;
         }
@@ -600,12 +703,6 @@ public class ManagedTradeService {
         log.warn("managed position closed because Binance position is missing id={}, userId={}, symbol={}, side={}, closePrice={}, reason={}",
                 position.getId(), position.getUserId(), position.getSymbol(), position.getEntrySide(), closePrice,
                 ManagedPositionCloseReason.POSITION_NOT_FOUND_ON_EXCHANGE);
-    }
-
-    private boolean isExternalPosition(ManagedPositionEntity position) {
-        return position != null
-                && (position.getStatus() == ManagedPositionStatus.EXTERNAL_UNMANAGED
-                || position.getStatus() == ManagedPositionStatus.NEEDS_CONFIGURATION);
     }
 
     private boolean isActiveManagedPosition(ManagedPositionEntity position) {
@@ -679,11 +776,11 @@ public class ManagedTradeService {
         if (request == null) {
             throw new IllegalArgumentException("손절선 상승 설정이 필요합니다.");
         }
-        if (!isActiveManagedPosition(position) && !isExternalPosition(position)) {
+        if (!isActiveManagedPosition(position)) {
             throw new IllegalArgumentException("ACTIVE 상태의 관리 포지션만 손절선 상승 모드를 추가할 수 있습니다.");
         }
-        if (isExternalPosition(position) || position.getCurrentStopPrice() == null) {
-            throw new IllegalArgumentException("외부 포지션은 손절 기준을 함께 저장하는 모드 변경으로 관리 시작해야 합니다.");
+        if (position.getCurrentStopPrice() == null) {
+            throw new IllegalArgumentException("손절 기준이 없는 포지션은 모드 변경으로 손절 기준을 먼저 저장해야 합니다.");
         }
         TriggerBasis previousStopBasis = position.getStopTriggerBasis();
         BigDecimal previousTargetPrice = position.getTargetPrice();
@@ -708,13 +805,12 @@ public class ManagedTradeService {
             throw new IllegalArgumentException("변경할 모드가 필요합니다.");
         }
         ManagedPositionEntity position = position(userId, id);
-        boolean externalPosition = isExternalPosition(position);
-        if (!isActiveManagedPosition(position) && !externalPosition) {
+        if (!isActiveManagedPosition(position)) {
             throw new IllegalArgumentException("ACTIVE 상태의 관리 포지션만 모드를 변경할 수 있습니다.");
         }
         ManagedOrderMode previousMode = position.getMode();
         if (request.getMode() == ManagedOrderMode.RAISING_STOP_ONLY) {
-            if (externalPosition || position.getCurrentStopPrice() == null) {
+            if (position.getCurrentStopPrice() == null) {
                 position.switchToFixedTpSl(
                         request.getStopTriggerBasis(),
                         request.getStopValueType(),
@@ -743,7 +839,7 @@ public class ManagedTradeService {
         ManagedPositionEntity saved = managedPositionRepository.save(position);
         monitorService.pushPositionUpdate(saved.getUserId(), saved.getSymbol(), ManagedPositionResponseDto.from(saved));
         log.info("managed position mode updated id={}, symbol={}, oldStatus={}, newStatus={}, previousMode={}, mode={}, currentStopPrice={}, targetPrice={}, raiseTriggerValue={}, raiseStopType={}, raiseStopValue={}, sourceOfConfig=DB",
-                saved.getId(), saved.getSymbol(), externalPosition ? "NEEDS_CONFIGURATION" : "ACTIVE_MANAGED",
+                saved.getId(), saved.getSymbol(), "ACTIVE_MANAGED",
                 saved.getStatus(), previousMode, saved.getMode(), saved.getCurrentStopPrice(),
                 saved.getTargetPrice(), saved.getRaiseTriggerValue(), saved.getRaiseStopType(), saved.getRaiseStopValue());
         return saved;

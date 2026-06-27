@@ -143,9 +143,8 @@ public class ManagedPositionEntity {
         if (position == null
                 || position.getPositionAmt() == null
                 || position.getPositionAmt().signum() == 0
-                || position.getEntryPrice() == null
-                || position.getEntryPrice().signum() <= 0) {
-            throw new IllegalArgumentException("편입할 Binance 포지션의 수량과 진입가는 필수입니다.");
+                || priceOrFallback(position.getEntryPrice(), position.getMarkPrice()).signum() <= 0) {
+            throw new IllegalArgumentException("편입할 Binance 포지션의 수량과 기준 가격은 필수입니다.");
         }
         ManagedPositionEntity entity = new ManagedPositionEntity();
         boolean longSide = position.getPositionAmt().signum() > 0;
@@ -154,10 +153,16 @@ public class ManagedPositionEntity {
         entity.entrySide = longSide ? "BUY" : "SELL";
         entity.closeSide = longSide ? "SELL" : "BUY";
         entity.entryOrderId = "EXTERNAL-" + position.getSymbol() + "-" + System.currentTimeMillis();
-        entity.entryPrice = position.getEntryPrice();
+        entity.entryPrice = priceOrFallback(position.getEntryPrice(), position.getMarkPrice());
         entity.quantity = position.getPositionAmt().abs();
-        entity.leverage = valueOrDefault(position.getLeverage(), BigDecimal.ONE);
-        entity.requiredMargin = calculateRequiredMargin(entity.entryPrice, entity.quantity, entity.leverage);
+        entity.leverage = positiveOrOne(position.getLeverage());
+        entity.requiredMargin = calculateRequiredMargin(
+                entity.entryPrice,
+                entity.quantity,
+                entity.leverage,
+                position.getNotional(),
+                position.getPositionInitialMargin()
+        );
         entity.atr = null;
         entity.atrMultiplier = null;
         entity.riskPercent = BigDecimal.ONE;
@@ -182,16 +187,18 @@ public class ManagedPositionEntity {
         entity.status = ManagedPositionStatus.ACTIVE_MANAGED;
         entity.openedAt = LocalDateTime.now();
         entity.updatedAt = entity.openedAt;
-        entity.appendEvent("EXTERNAL_POSITION_IMPORTED source=BINANCE_SYNC, symbol=" + entity.symbol
+        entity.appendEvent("MANAGED_STARTED source=USER, symbol=" + entity.symbol
                 + ", side=" + entity.entrySide
                 + ", entryPrice=" + entity.entryPrice
                 + ", currentPrice=" + entity.currentPrice
                 + ", quantity=" + entity.quantity
                 + ", leverage=" + entity.leverage
+                + ", exchangeNotional=" + position.getNotional()
+                + ", exchangeInitialMargin=" + position.getPositionInitialMargin()
                 + ", requiredMargin=" + entity.requiredMargin
                 + ", defaultStopPercent=1"
                 + ", defaultTakeProfitPercent=1");
-        entity.appendEvent("DEFAULT_FIXED_TP_SL_APPLIED source=BINANCE_SYNC, stopBasis=PNL_PERCENT, takeProfitBasis=PNL_PERCENT");
+        entity.appendEvent("DEFAULT_FIXED_TP_SL_APPLIED source=USER, stopBasis=PNL_PERCENT, takeProfitBasis=PNL_PERCENT");
         return entity;
     }
 
@@ -450,9 +457,7 @@ public class ManagedPositionEntity {
 
     private boolean isConfigurableForManagement() {
         return status == ManagedPositionStatus.ACTIVE
-                || status == ManagedPositionStatus.ACTIVE_MANAGED
-                || status == ManagedPositionStatus.EXTERNAL_UNMANAGED
-                || status == ManagedPositionStatus.NEEDS_CONFIGURATION;
+                || status == ManagedPositionStatus.ACTIVE_MANAGED;
     }
 
     private BigDecimal preserveRaisedStop(BigDecimal recalculatedStop, boolean longSide) {
@@ -466,14 +471,45 @@ public class ManagedPositionEntity {
     }
 
     private static BigDecimal calculateRequiredMargin(BigDecimal entryPrice, BigDecimal quantity, BigDecimal leverage) {
-        if (entryPrice == null || quantity == null || leverage == null || leverage.signum() <= 0) {
+        return calculateRequiredMargin(entryPrice, quantity, leverage, null, null);
+    }
+
+    private static BigDecimal calculateRequiredMargin(BigDecimal entryPrice, BigDecimal quantity, BigDecimal leverage,
+                                                      BigDecimal notional) {
+        return calculateRequiredMargin(entryPrice, quantity, leverage, notional, null);
+    }
+
+    private static BigDecimal calculateRequiredMargin(BigDecimal entryPrice, BigDecimal quantity, BigDecimal leverage,
+                                                      BigDecimal notional, BigDecimal positionInitialMargin) {
+        if (positionInitialMargin != null && positionInitialMargin.signum() > 0) {
+            return positionInitialMargin.abs();
+        }
+        BigDecimal normalizedLeverage = positiveOrOne(leverage);
+        if (notional != null && notional.signum() != 0) {
+            return notional.abs().divide(normalizedLeverage, 18, RoundingMode.HALF_UP);
+        }
+        if (entryPrice == null || quantity == null) {
             return BigDecimal.ZERO;
         }
-        return entryPrice.multiply(quantity).divide(leverage, 18, RoundingMode.HALF_UP);
+        return entryPrice.multiply(quantity).divide(normalizedLeverage, 18, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal priceOrFallback(BigDecimal entryPrice, BigDecimal markPrice) {
+        if (entryPrice != null && entryPrice.signum() > 0) {
+            return entryPrice;
+        }
+        if (markPrice != null && markPrice.signum() > 0) {
+            return markPrice;
+        }
+        return BigDecimal.ZERO;
     }
 
     private static BigDecimal valueOrDefault(BigDecimal value, BigDecimal defaultValue) {
         return value == null ? defaultValue : value;
+    }
+
+    private static BigDecimal positiveOrOne(BigDecimal value) {
+        return value == null || value.signum() <= 0 ? BigDecimal.ONE : value;
     }
 
     public void appendEvent(String message) {
@@ -585,6 +621,13 @@ public class ManagedPositionEntity {
         this.closeReason = reason;
         this.closeOrderId = "TEST-CLOSE-" + id;
         appendEvent("TEST_CLOSE_TRIGGERED reason=" + reason + ", closePrice=" + closePrice);
+        markClosed(realizedPnl, closePrice);
+    }
+
+    public void markManagementStopped(BigDecimal realizedPnl, BigDecimal closePrice) {
+        this.closeReason = ManagedPositionCloseReason.MANAGEMENT_STOPPED;
+        this.closeOrderId = null;
+        appendEvent("MANAGED_STOPPED closePrice=" + closePrice + ", realizedPnl=" + realizedPnl);
         markClosed(realizedPnl, closePrice);
     }
 

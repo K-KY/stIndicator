@@ -16,6 +16,8 @@ import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseD
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedStopHistoryResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
+import st.indicator.stindicator.presentation.dto.StartManagedPositionRequestDto;
+import st.indicator.stindicator.presentation.dto.UnmanagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionModeRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
@@ -64,6 +66,20 @@ public class ManagedTradeController implements ManagedTradeApi {
         return managedTradeService.activePositions(requireSessionUserId(session)).stream()
                 .map(ManagedPositionResponseDto::from)
                 .toList();
+    }
+
+    @Override
+    public List<UnmanagedPositionResponseDto> unmanagedPositions(HttpSession session) {
+        return managedTradeService.unmanagedExchangePositions(requireSessionUserId(session)).stream()
+                .map(UnmanagedPositionResponseDto::from)
+                .toList();
+    }
+
+    @Override
+    public ManagedPositionResponseDto startManagingPosition(StartManagedPositionRequestDto request, HttpSession session) {
+        return ManagedPositionResponseDto.from(
+                managedTradeService.startManagingExchangePosition(requireSessionUserId(session), request)
+        );
     }
 
     @Override
@@ -154,6 +170,11 @@ public class ManagedTradeController implements ManagedTradeApi {
     @Override
     public ManagedPositionResponseDto closePosition(Long id, HttpSession session) {
         return ManagedPositionResponseDto.from(managedTradeService.closePosition(requireSessionUserId(session), id));
+    }
+
+    @Override
+    public ManagedPositionResponseDto stopManagingPosition(Long id, HttpSession session) {
+        return ManagedPositionResponseDto.from(managedTradeService.stopManagingPosition(requireSessionUserId(session), id));
     }
 
     private Long requireSessionUserId(HttpSession session) {

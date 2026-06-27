@@ -14,6 +14,8 @@ import st.indicator.stindicator.presentation.dto.ManagedPositionJournalResponseD
 import st.indicator.stindicator.presentation.dto.ManagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.ManagedStopHistoryResponseDto;
 import st.indicator.stindicator.presentation.dto.PendingOrderResponseDto;
+import st.indicator.stindicator.presentation.dto.StartManagedPositionRequestDto;
+import st.indicator.stindicator.presentation.dto.UnmanagedPositionResponseDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionTriggerBasisRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdateManagedPositionModeRequestDto;
 import st.indicator.stindicator.presentation.dto.UpdatePendingOrderConditionsRequestDto;
@@ -50,6 +52,17 @@ public interface ManagedTradeApi {
     @Operation(summary = "활성 보유 포지션 목록 조회")
     @GetMapping("/managed-positions")
     List<ManagedPositionResponseDto> positions(@Parameter(hidden = true) HttpSession session);
+
+    @Operation(summary = "미관리 포지션 목록 조회", description = "Binance에는 존재하지만 서비스가 TP/SL 전략을 수행하지 않는 실제 포지션을 조회합니다.")
+    @GetMapping("/managed-positions/unmanaged")
+    List<UnmanagedPositionResponseDto> unmanagedPositions(@Parameter(hidden = true) HttpSession session);
+
+    @Operation(summary = "미관리 포지션 관리 시작", description = "사용자가 명시적으로 선택한 Binance 실제 포지션만 ACTIVE_MANAGED로 등록합니다.")
+    @PostMapping("/managed-positions/start")
+    ManagedPositionResponseDto startManagingPosition(
+            @RequestBody StartManagedPositionRequestDto request,
+            @Parameter(hidden = true) HttpSession session
+    );
 
     @Operation(summary = "종료된 관리 포지션 이력 조회", description = "최근 종료된 포지션부터 조회하며 심볼, 방향, 전략 모드, 청산 사유로 필터링할 수 있습니다.")
     @GetMapping("/managed-positions/history")
@@ -139,4 +152,9 @@ public interface ManagedTradeApi {
     @PostMapping("/managed-positions/{id}/close")
     ManagedPositionResponseDto closePosition(@PathVariable Long id,
                                              @Parameter(hidden = true) HttpSession session);
+
+    @Operation(summary = "관리 포지션 관리 해제", description = "Binance 포지션은 유지하고 서비스 TP/SL 관리만 종료합니다.")
+    @PostMapping("/managed-positions/{id}/stop-management")
+    ManagedPositionResponseDto stopManagingPosition(@PathVariable Long id,
+                                                    @Parameter(hidden = true) HttpSession session);
 }
