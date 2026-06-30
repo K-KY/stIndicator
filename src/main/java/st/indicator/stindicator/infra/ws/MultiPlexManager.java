@@ -13,6 +13,7 @@ import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.websocket.WebsocketOutbound;
+import st.indicator.stindicator.application.service.ChartRealtimeService;
 import st.indicator.stindicator.application.service.MonitorService;
 import st.indicator.stindicator.infra.ws.dto.binance.KlineEventDTO;
 import st.indicator.stindicator.presentation.ws.dto.BinanceMarkPriceMessage;
@@ -40,6 +41,7 @@ public class MultiPlexManager {
     private static final String MARKET_WS_URL = "wss://fstream.binance.com/market/stream";
     private static final String PUBLIC_WS_URL = "wss://fstream.binance.com/public/stream";
     private final MonitorService monitorService;
+    private final ChartRealtimeService chartRealtimeService;
     private final MonitorEventPublisher monitorEventPublisher;
 
     private final ObjectMapper objectMapper;
@@ -65,9 +67,11 @@ public class MultiPlexManager {
     private volatile boolean shuttingDown;
 
     public MultiPlexManager(MonitorService monitorService,
+                            ChartRealtimeService chartRealtimeService,
                             MonitorEventPublisher monitorEventPublisher,
                             ObjectMapper objectMapper) {
         this.monitorService = monitorService;
+        this.chartRealtimeService = chartRealtimeService;
         this.monitorEventPublisher = monitorEventPublisher;
         this.objectMapper = objectMapper;
     }
@@ -543,6 +547,7 @@ public class MultiPlexManager {
             if (payload.has("e") && "kline".equals(payload.get("e").asString())) {
                 KlineEventDTO dto = objectMapper.readValue(payloadJson, KlineEventDTO.class);
                 monitorService.push(dto);
+                chartRealtimeService.handleKline(dto);
                 return;
             }
 

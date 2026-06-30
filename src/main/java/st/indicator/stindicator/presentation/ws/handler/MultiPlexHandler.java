@@ -9,6 +9,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import st.indicator.stindicator.application.service.MarketSubscriptionService;
+import st.indicator.stindicator.application.service.ChartRealtimeService;
 import st.indicator.stindicator.application.service.MonitorService;
 import st.indicator.stindicator.application.service.SessionUser;
 import st.indicator.stindicator.infra.ws.MultiPlexManager;
@@ -34,16 +35,19 @@ public class MultiPlexHandler extends TextWebSocketHandler {
     private static final String UNSUBSCRIBE_CHART = "UNSUBSCRIBE_CHART";
     private final ObjectMapper objectMapper;
     private final MonitorService monitorService;
+    private final ChartRealtimeService chartRealtimeService;
     private final MultiPlexManager multiPlexManager;
     private final MarketSubscriptionService marketSubscriptionService;
     private final ScheduledExecutorService releaseExecutor = Executors.newSingleThreadScheduledExecutor();
 
     public MultiPlexHandler(ObjectMapper objectMapper, MonitorService monitorService, MultiPlexManager multiPlexManager,
-                            MarketSubscriptionService marketSubscriptionService) {
+                            MarketSubscriptionService marketSubscriptionService,
+                            ChartRealtimeService chartRealtimeService) {
         this.objectMapper = objectMapper;
         this.monitorService = monitorService;
         this.multiPlexManager = multiPlexManager;
         this.marketSubscriptionService = marketSubscriptionService;
+        this.chartRealtimeService = chartRealtimeService;
     }
 
     private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
@@ -82,8 +86,8 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         }
         if (Objects.equals(req.getType(), SUBSCRIBE_CHART)) {
             log.info("subscribe chart request: symbols={}, interval={}", req.getSymbols(), req.getInterval());
-            monitorService.subscribe(session, req);
-            req.getSymbols().forEach(symbol -> multiPlexManager.subscribeKline(symbol, req.getInterval()));
+            chartRealtimeService.subscribe(session, req)
+                    .forEach(multiPlexManager::subscribe);
         }
         if (Objects.equals(req.getType(), UNSUBSCRIBE)) {
             marketSubscriptionService.unsubscribe(sessionUserId(session), req.getSymbols());
@@ -95,7 +99,7 @@ public class MultiPlexHandler extends TextWebSocketHandler {
                     .forEach(this::releaseUpstreamWhenUnused);
         }
         if (Objects.equals(req.getType(), UNSUBSCRIBE_CHART)) {
-            monitorService.unsubscribe(session, req)
+            chartRealtimeService.unsubscribe(session, req)
                     .forEach(this::releaseUpstreamWhenUnused);
         }
     }
@@ -106,6 +110,8 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         sessions.remove(session); // 세션 제거
         monitorService.unregisterSession(session);
         monitorService.unsubscribe(session)
+                .forEach(this::releaseUpstreamWhenUnused);
+        chartRealtimeService.unsubscribe(session)
                 .forEach(this::releaseUpstreamWhenUnused);
     }
 
@@ -134,6 +140,10 @@ public class MultiPlexHandler extends TextWebSocketHandler {
         releaseExecutor.schedule(() -> {
             if (monitorService.hasStreamSubscribers(stream)) {
                 log.info("skip upstream unsubscribe stream={}, active subscriber exists", stream);
+                return;
+            }
+            if (chartRealtimeService.hasStreamSubscribers(stream)) {
+                log.info("skip upstream unsubscribe stream={}, active chart subscriber exists", stream);
                 return;
             }
             multiPlexManager.unsubscribe(stream);
