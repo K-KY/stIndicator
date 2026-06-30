@@ -47,6 +47,19 @@ public class Candle {
     @JsonProperty(index = 11)
     private String ignore;
 
+    public Candle() {
+    }
+
+    public Candle(Long openTime, BigDecimal open, BigDecimal high, BigDecimal low, BigDecimal close,
+                  BigDecimal volume, Long closeTime) {
+        this.openTime = openTime;
+        this.open = open;
+        this.high = high;
+        this.low = low;
+        this.close = close;
+        this.volume = volume;
+        this.closeTime = closeTime;
+    }
 
     public Long getOpenTime() {
         return openTime;

@@ -9,6 +9,11 @@ public record ChartResponseDto(
         List<ChartCandleResponseDto> candles,
         Map<String, Object> indicators,
         boolean hasMore,
-        Long nextBefore
+        boolean hasOlder,
+        boolean hasNewer,
+        Long nextBefore,
+        Long nextAfter,
+        String direction,
+        int returnedCount
 ) {
 }

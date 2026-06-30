@@ -1,5 +1,7 @@
 package st.indicator.stindicator.application.service;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.exception.CandleFetchFailException;
 import st.indicator.stindicator.domain.utils.candle.Candle;
@@ -13,11 +15,12 @@ import java.math.RoundingMode;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -26,9 +29,13 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class ChartService {
+    private static final Logger log = LoggerFactory.getLogger(ChartService.class);
     private static final int DEFAULT_LIMIT = 200;
     private static final int MAX_LIMIT = 500;
-    private static final int MAX_WARMUP = 100;
+    private static final int MAX_PERIOD = 1000;
+    private static final int MAX_PERIOD_COUNT = 20;
+    private static final int MAX_WARMUP = 500;
+    private static final int MAX_FETCH_LIMIT = 1000;
     private static final Set<String> SUPPORTED_INTERVALS = Set.of("1m", "5m", "15m", "1h", "4h", "1d");
     private static final Duration LATEST_TTL = Duration.ofSeconds(20);
     private static final Duration HISTORY_TTL = Duration.ofMinutes(10);
@@ -42,6 +49,7 @@ public class ChartService {
     }
 
     public ChartResponseDto getChart(ChartRequestDto request) {
+        long startedAt = System.nanoTime();
         ChartQuery query = normalize(request);
         ChartCacheKey cacheKey = ChartCacheKey.from(query);
         long now = System.currentTimeMillis();
@@ -50,39 +58,57 @@ public class ChartService {
             return cached.response();
         }
 
-        ChartResponseDto response = load(query);
+        ChartResponseDto response = load(query, startedAt);
         evictCache(now);
-        long ttl = query.endTime() == null ? LATEST_TTL.toMillis() : HISTORY_TTL.toMillis();
+        long ttl = query.direction() == ChartDirection.LATEST ? LATEST_TTL.toMillis() : HISTORY_TTL.toMillis();
         cache.put(cacheKey, new CachedChart(response, now + ttl, now));
         return response;
     }
 
-    private ChartResponseDto load(ChartQuery query) {
+    private ChartResponseDto load(ChartQuery query, long startedAt) {
         int warmup = warmupCount(query);
-        int fetchLimit = Math.min(MAX_LIMIT + MAX_WARMUP + 1, query.limit() + warmup + 1);
+        int fetchLimit = Math.min(MAX_FETCH_LIMIT, query.limit() + warmup + 1);
         Map<String, String> params = new LinkedHashMap<>();
         params.put("symbol", query.symbol());
         params.put("interval", query.interval());
         params.put("limit", String.valueOf(fetchLimit));
-        if (query.endTime() != null) {
-            params.put("endTime", String.valueOf(Math.max(0, query.endTime() - 1)));
+        if (query.direction() == ChartDirection.OLDER) {
+            params.put("endTime", String.valueOf(Math.max(0, query.before() - 1)));
+        }
+        if (query.direction() == ChartDirection.NEWER) {
+            long warmupStartTime = Math.max(0, query.after() - (intervalMillis(query.interval()) * warmup));
+            params.put("startTime", String.valueOf(warmupStartTime));
         }
 
         try {
-            List<Candle> fetched = new ArrayList<>(exchangeConnector.getCandles(params));
-            fetched.sort(Comparator.comparing(Candle::getOpenTime));
-            int visibleStart = Math.max(0, fetched.size() - query.limit());
-            List<Candle> visible = fetched.subList(visibleStart, fetched.size());
-            Map<String, Object> indicators = calculateIndicators(fetched, visibleStart, query);
+            long fetchStartedAt = System.nanoTime();
+            List<Candle> fetched = normalizeCandles(exchangeConnector.getCandles(params));
+            long fetchDoneAt = System.nanoTime();
+            List<Candle> visibleCandidates = visibleCandidates(fetched, query);
+            boolean hasPreviousPage = visibleCandidates.size() > query.limit();
+            List<Candle> visible = visibleWindow(visibleCandidates, query);
+            long visibleOpenTime = visible.isEmpty() ? Long.MAX_VALUE : visible.getFirst().getOpenTime();
+            Map<String, Object> indicators = calculateIndicators(fetched, visibleOpenTime, query);
+            long calculatedAt = System.nanoTime();
             Long nextBefore = visible.isEmpty() ? null : visible.getFirst().getOpenTime();
-            boolean hasMore = !visible.isEmpty() && fetched.size() > query.limit();
+            Long nextAfter = visible.isEmpty() ? null : visible.getLast().getOpenTime();
+            boolean hasOlder = hasOlder(query, visible, hasPreviousPage, fetched);
+            boolean hasNewer = hasNewer(query, visible, hasPreviousPage);
+            log.debug("chart load done symbol={}, interval={}, returned={}, prepared={}, candleFetchMs={}, indicatorMs={}, totalMs={}",
+                    query.symbol(), query.interval(), visible.size(), fetched.size(),
+                    millis(fetchDoneAt - fetchStartedAt), millis(calculatedAt - fetchDoneAt), millis(calculatedAt - startedAt));
             return new ChartResponseDto(
                     query.symbol(),
                     query.interval(),
                     visible.stream().map(ChartCandleResponseDto::from).toList(),
                     indicators,
-                    hasMore,
-                    nextBefore
+                    hasOlder,
+                    hasOlder,
+                    hasNewer,
+                    nextBefore,
+                    nextAfter,
+                    query.direction().name(),
+                    visible.size()
             );
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -92,150 +118,234 @@ public class ChartService {
         }
     }
 
-    private Map<String, Object> calculateIndicators(List<Candle> candles, int visibleStart, ChartQuery query) {
-        if (query.indicators().isEmpty()) {
-            return Map.of();
+    private List<Candle> visibleCandidates(List<Candle> fetched, ChartQuery query) {
+        return switch (query.direction()) {
+            case OLDER -> fetched.stream()
+                    .filter(candle -> candle.getOpenTime() < query.before())
+                    .toList();
+            case NEWER -> fetched.stream()
+                    .filter(candle -> candle.getOpenTime() > query.after())
+                    .toList();
+            case LATEST -> fetched;
+        };
+    }
+
+    private List<Candle> visibleWindow(List<Candle> candidates, ChartQuery query) {
+        if (candidates.isEmpty()) {
+            return List.of();
         }
+        if (query.direction() == ChartDirection.NEWER) {
+            return candidates.subList(0, Math.min(query.limit(), candidates.size()));
+        }
+        int start = Math.max(0, candidates.size() - query.limit());
+        return candidates.subList(start, candidates.size());
+    }
+
+    private boolean hasOlder(ChartQuery query, List<Candle> visible, boolean hasPreviousPage, List<Candle> fetched) {
+        if (visible.isEmpty()) {
+            return false;
+        }
+        if (query.direction() == ChartDirection.NEWER) {
+            long firstVisible = visible.getFirst().getOpenTime();
+            return fetched.stream().anyMatch(candle -> candle.getOpenTime() < firstVisible);
+        }
+        return hasPreviousPage;
+    }
+
+    private boolean hasNewer(ChartQuery query, List<Candle> visible, boolean hasNextPage) {
+        if (visible.isEmpty()) {
+            return false;
+        }
+        if (query.direction() == ChartDirection.NEWER) {
+            return hasNextPage;
+        }
+        return query.direction() == ChartDirection.OLDER;
+    }
+
+    private List<Candle> normalizeCandles(List<Candle> candles) {
+        Map<Long, Candle> byOpenTime = new LinkedHashMap<>();
+        candles.stream()
+                .filter(candle -> candle.getOpenTime() != null)
+                .sorted(Comparator.comparing(Candle::getOpenTime))
+                .forEach(candle -> byOpenTime.put(candle.getOpenTime(), candle));
+        return new ArrayList<>(byOpenTime.values());
+    }
+
+    private Map<String, Object> calculateIndicators(List<Candle> candles, long visibleOpenTime, ChartQuery query) {
         Map<String, Object> result = new LinkedHashMap<>();
-        List<BigDecimal> closes = candles.stream().map(Candle::getClose).toList();
-        if (query.indicators().contains(Indicator.SMA)) {
-            result.put("SMA", visible(sma(closes, query.smaPeriod()), visibleStart));
+        if (!query.hasIndicators()) {
+            return result;
         }
-        if (query.indicators().contains(Indicator.EMA)) {
-            result.put("EMA", visible(ema(closes, query.emaPeriod()), visibleStart));
+        if (!query.smaPeriods().isEmpty()) {
+            List<MovingAverageSeries> smaSeries = query.smaPeriods().stream()
+                    .map(period -> new MovingAverageSeries(period, visible(smaPoints(candles, period), visibleOpenTime)))
+                    .toList();
+            result.put("sma", smaSeries);
         }
-        if (query.indicators().contains(Indicator.RSI)) {
-            result.put("RSI", visible(rsi(closes, query.rsiPeriod()), visibleStart));
+        if (!query.emaPeriods().isEmpty()) {
+            result.put("ema", query.emaPeriods().stream()
+                    .map(period -> new MovingAverageSeries(period, visible(emaPoints(candles, period), visibleOpenTime)))
+                    .toList());
         }
-        if (query.indicators().contains(Indicator.MACD)) {
-            List<BigDecimal> fast = ema(closes, query.macdFastPeriod());
-            List<BigDecimal> slow = ema(closes, query.macdSlowPeriod());
-            List<BigDecimal> macd = subtract(fast, slow);
-            List<BigDecimal> signal = emaNullable(macd, query.macdSignalPeriod());
-            Map<String, Object> macdResult = new LinkedHashMap<>();
-            macdResult.put("macd", visible(macd, visibleStart));
-            macdResult.put("signal", visible(signal, visibleStart));
-            macdResult.put("histogram", visible(subtract(macd, signal), visibleStart));
-            result.put("MACD", macdResult);
+        if (query.bollingerEnabled()) {
+            List<BollingerPoint> points = bollingerPoints(candles, query.bollingerPeriod(), query.bollingerDeviation());
+            result.put("bollingerBands", new BollingerBandsSeries(
+                    query.bollingerPeriod(),
+                    query.bollingerDeviation(),
+                    visible(points, visibleOpenTime)
+            ));
+        }
+        if (query.vwap()) {
+            result.put("vwap", new VwapSeries(visible(vwapPoints(candles), visibleOpenTime)));
         }
         return result;
     }
 
-    private List<BigDecimal> sma(List<BigDecimal> values, int period) {
-        List<BigDecimal> result = nullList(values.size());
+    public List<IndicatorPoint> smaPoints(List<Candle> candles, int period) {
+        List<IndicatorPoint> result = new ArrayList<>();
         BigDecimal sum = BigDecimal.ZERO;
-        for (int index = 0; index < values.size(); index++) {
-            sum = sum.add(values.get(index));
+        for (int index = 0; index < candles.size(); index++) {
+            sum = sum.add(candles.get(index).getClose());
             if (index >= period) {
-                sum = sum.subtract(values.get(index - period));
+                sum = sum.subtract(candles.get(index - period).getClose());
             }
             if (index >= period - 1) {
-                result.set(index, sum.divide(BigDecimal.valueOf(period), 12, RoundingMode.HALF_UP));
+                result.add(new IndicatorPoint(
+                        candles.get(index).getOpenTime(),
+                        sum.divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP)
+                ));
             }
         }
         return result;
     }
 
-    private List<BigDecimal> ema(List<BigDecimal> values, int period) {
-        List<BigDecimal> result = nullList(values.size());
-        if (values.size() < period) {
+    public List<IndicatorPoint> emaPoints(List<Candle> candles, int period) {
+        List<IndicatorPoint> result = new ArrayList<>();
+        if (candles.size() < period) {
             return result;
         }
-        BigDecimal seed = values.subList(0, period).stream().reduce(BigDecimal.ZERO, BigDecimal::add)
-                .divide(BigDecimal.valueOf(period), 12, RoundingMode.HALF_UP);
-        result.set(period - 1, seed);
-        BigDecimal multiplier = BigDecimal.valueOf(2)
+        BigDecimal seed = BigDecimal.ZERO;
+        for (int index = 0; index < period; index++) {
+            seed = seed.add(candles.get(index).getClose());
+        }
+        seed = seed.divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
+        result.add(new IndicatorPoint(candles.get(period - 1).getOpenTime(), seed));
+        BigDecimal alpha = BigDecimal.valueOf(2)
                 .divide(BigDecimal.valueOf(period + 1L), 18, RoundingMode.HALF_UP);
         BigDecimal previous = seed;
-        for (int index = period; index < values.size(); index++) {
-            previous = values.get(index).subtract(previous).multiply(multiplier).add(previous);
-            result.set(index, previous);
+        for (int index = period; index < candles.size(); index++) {
+            previous = candles.get(index).getClose().multiply(alpha)
+                    .add(previous.multiply(BigDecimal.ONE.subtract(alpha)));
+            result.add(new IndicatorPoint(candles.get(index).getOpenTime(), previous));
         }
         return result;
     }
 
-    private List<BigDecimal> emaNullable(List<BigDecimal> values, int period) {
-        List<BigDecimal> result = nullList(values.size());
-        int first = 0;
-        while (first < values.size() && values.get(first) == null) {
-            first++;
-        }
-        if (values.size() - first < period) {
-            return result;
-        }
-        List<BigDecimal> compact = values.subList(first, values.size());
-        List<BigDecimal> calculated = ema(compact, period);
-        for (int index = 0; index < calculated.size(); index++) {
-            result.set(first + index, calculated.get(index));
-        }
-        return result;
-    }
-
-    private List<BigDecimal> rsi(List<BigDecimal> values, int period) {
-        List<BigDecimal> result = nullList(values.size());
-        if (values.size() <= period) {
-            return result;
-        }
-        BigDecimal gain = BigDecimal.ZERO;
-        BigDecimal loss = BigDecimal.ZERO;
-        for (int index = 1; index <= period; index++) {
-            BigDecimal change = values.get(index).subtract(values.get(index - 1));
-            gain = gain.add(change.max(BigDecimal.ZERO));
-            loss = loss.add(change.min(BigDecimal.ZERO).abs());
-        }
-        BigDecimal averageGain = gain.divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
-        BigDecimal averageLoss = loss.divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
-        result.set(period, rsiValue(averageGain, averageLoss));
-        for (int index = period + 1; index < values.size(); index++) {
-            BigDecimal change = values.get(index).subtract(values.get(index - 1));
-            averageGain = averageGain.multiply(BigDecimal.valueOf(period - 1L))
-                    .add(change.max(BigDecimal.ZERO))
-                    .divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
-            averageLoss = averageLoss.multiply(BigDecimal.valueOf(period - 1L))
-                    .add(change.min(BigDecimal.ZERO).abs())
-                    .divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
-            result.set(index, rsiValue(averageGain, averageLoss));
-        }
-        return result;
-    }
-
-    private BigDecimal rsiValue(BigDecimal averageGain, BigDecimal averageLoss) {
-        if (averageLoss.signum() == 0) {
-            return BigDecimal.valueOf(100);
-        }
-        BigDecimal relativeStrength = averageGain.divide(averageLoss, 18, RoundingMode.HALF_UP);
-        return BigDecimal.valueOf(100).subtract(
-                BigDecimal.valueOf(100).divide(BigDecimal.ONE.add(relativeStrength), 12, RoundingMode.HALF_UP)
-        );
-    }
-
-    private List<BigDecimal> subtract(List<BigDecimal> left, List<BigDecimal> right) {
-        List<BigDecimal> result = nullList(Math.min(left.size(), right.size()));
-        for (int index = 0; index < result.size(); index++) {
-            if (left.get(index) != null && right.get(index) != null) {
-                result.set(index, left.get(index).subtract(right.get(index)));
+    public List<BollingerPoint> bollingerPoints(List<Candle> candles, int period, BigDecimal deviation) {
+        List<BollingerPoint> result = new ArrayList<>();
+        BigDecimal sum = BigDecimal.ZERO;
+        BigDecimal sumSquares = BigDecimal.ZERO;
+        for (int index = 0; index < candles.size(); index++) {
+            BigDecimal close = candles.get(index).getClose();
+            sum = sum.add(close);
+            sumSquares = sumSquares.add(close.multiply(close));
+            if (index >= period) {
+                BigDecimal old = candles.get(index - period).getClose();
+                sum = sum.subtract(old);
+                sumSquares = sumSquares.subtract(old.multiply(old));
+            }
+            if (index >= period - 1) {
+                BigDecimal periodDecimal = BigDecimal.valueOf(period);
+                BigDecimal mean = sum.divide(periodDecimal, 18, RoundingMode.HALF_UP);
+                BigDecimal variance = sumSquares.divide(periodDecimal, 18, RoundingMode.HALF_UP).subtract(mean.multiply(mean));
+                BigDecimal standardDeviation = sqrt(variance.max(BigDecimal.ZERO));
+                BigDecimal bandDistance = standardDeviation.multiply(deviation);
+                result.add(new BollingerPoint(
+                        candles.get(index).getOpenTime(),
+                        mean,
+                        mean.add(bandDistance),
+                        mean.subtract(bandDistance)
+                ));
             }
         }
         return result;
     }
 
-    private List<BigDecimal> visible(List<BigDecimal> values, int visibleStart) {
-        return new ArrayList<>(values.subList(Math.min(visibleStart, values.size()), values.size()));
+    public List<IndicatorPoint> vwapPoints(List<Candle> candles) {
+        List<IndicatorPoint> result = new ArrayList<>();
+        BigDecimal cumulativePriceVolume = BigDecimal.ZERO;
+        BigDecimal cumulativeVolume = BigDecimal.ZERO;
+        String currentSession = null;
+        for (Candle candle : candles) {
+            String session = Instant.ofEpochMilli(candle.getOpenTime()).atZone(ZoneOffset.UTC).toLocalDate().toString();
+            if (!session.equals(currentSession)) {
+                currentSession = session;
+                cumulativePriceVolume = BigDecimal.ZERO;
+                cumulativeVolume = BigDecimal.ZERO;
+            }
+            BigDecimal volume = candle.getVolume();
+            if (volume == null || volume.signum() <= 0) {
+                continue;
+            }
+            BigDecimal typicalPrice = candle.getHigh().add(candle.getLow()).add(candle.getClose())
+                    .divide(BigDecimal.valueOf(3), 18, RoundingMode.HALF_UP);
+            cumulativePriceVolume = cumulativePriceVolume.add(typicalPrice.multiply(volume));
+            cumulativeVolume = cumulativeVolume.add(volume);
+            if (cumulativeVolume.signum() > 0) {
+                result.add(new IndicatorPoint(
+                        candle.getOpenTime(),
+                        cumulativePriceVolume.divide(cumulativeVolume, 18, RoundingMode.HALF_UP)
+                ));
+            }
+        }
+        return result;
     }
 
-    private List<BigDecimal> nullList(int size) {
-        return new ArrayList<>(Arrays.asList(new BigDecimal[size]));
+    private BigDecimal sqrt(BigDecimal value) {
+        if (value.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return BigDecimal.valueOf(Math.sqrt(value.doubleValue()));
+    }
+
+    private <T extends TimedPoint> List<T> visible(List<T> values, long visibleOpenTime) {
+        if (values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(value -> value.time() >= visibleOpenTime)
+                .toList();
     }
 
     private int warmupCount(ChartQuery query) {
         int warmup = 0;
-        if (query.indicators().contains(Indicator.SMA)) warmup = Math.max(warmup, query.smaPeriod());
-        if (query.indicators().contains(Indicator.EMA)) warmup = Math.max(warmup, Math.max(50, query.emaPeriod() * 2));
-        if (query.indicators().contains(Indicator.RSI)) warmup = Math.max(warmup, query.rsiPeriod() + 1);
-        if (query.indicators().contains(Indicator.MACD)) {
-            warmup = Math.max(warmup, Math.max(60, query.macdSlowPeriod() + query.macdSignalPeriod()));
+        for (Integer period : query.smaPeriods()) {
+            warmup = Math.max(warmup, period - 1);
         }
-        return Math.min(MAX_WARMUP, warmup);
+        if (query.bollingerEnabled()) {
+            warmup = Math.max(warmup, query.bollingerPeriod() - 1);
+        }
+        for (Integer period : query.emaPeriods()) {
+            warmup = Math.max(warmup, Math.max(period * 3, period + 100));
+        }
+        if (query.vwap()) {
+            long intervalMillis = intervalMillis(query.interval());
+            int sessionWarmup = intervalMillis <= 0 ? 0 : (int) Math.min(MAX_WARMUP, Duration.ofDays(1).toMillis() / intervalMillis);
+            warmup = Math.max(warmup, sessionWarmup);
+        }
+        return Math.min(MAX_WARMUP, Math.max(0, warmup));
+    }
+
+    private long intervalMillis(String interval) {
+        return switch (interval) {
+            case "1m" -> Duration.ofMinutes(1).toMillis();
+            case "5m" -> Duration.ofMinutes(5).toMillis();
+            case "15m" -> Duration.ofMinutes(15).toMillis();
+            case "1h" -> Duration.ofHours(1).toMillis();
+            case "4h" -> Duration.ofHours(4).toMillis();
+            case "1d" -> Duration.ofDays(1).toMillis();
+            default -> Duration.ofHours(1).toMillis();
+        };
     }
 
     private ChartQuery normalize(ChartRequestDto request) {
@@ -255,41 +365,74 @@ public class ChartService {
             throw new IllegalArgumentException("limit은 1 이상이어야 합니다.");
         }
         limit = Math.min(limit, MAX_LIMIT);
-        EnumSet<Indicator> indicators = parseIndicators(request.getIndicators());
-        int smaPeriod = period(request.getSmaPeriod(), 20, "smaPeriod");
-        int emaPeriod = period(request.getEmaPeriod(), 20, "emaPeriod");
-        int rsiPeriod = period(request.getRsiPeriod(), 14, "rsiPeriod");
-        int macdFast = period(request.getMacdFastPeriod(), 12, "macdFastPeriod");
-        int macdSlow = period(request.getMacdSlowPeriod(), 26, "macdSlowPeriod");
-        int macdSignal = period(request.getMacdSignalPeriod(), 9, "macdSignalPeriod");
-        if (macdFast >= macdSlow) {
-            throw new IllegalArgumentException("macdFastPeriod는 macdSlowPeriod보다 작아야 합니다.");
+        Long before = request.getBefore() == null ? request.getEndTime() : request.getBefore();
+        Long after = request.getAfter();
+        if (before != null && after != null) {
+            throw new IllegalArgumentException("before와 after는 동시에 사용할 수 없습니다.");
         }
-        return new ChartQuery(symbol, interval, limit, request.getEndTime(), indicators,
-                smaPeriod, emaPeriod, rsiPeriod, macdFast, macdSlow, macdSignal);
+        if (before != null && before < 0) {
+            throw new IllegalArgumentException("before는 0 이상이어야 합니다.");
+        }
+        if (after != null && after < 0) {
+            throw new IllegalArgumentException("after는 0 이상이어야 합니다.");
+        }
+        ChartDirection direction = before != null ? ChartDirection.OLDER : after != null ? ChartDirection.NEWER : ChartDirection.LATEST;
+        List<Integer> emaPeriods = periods(request.getEmaPeriods(), request.getIndicators(), "EMA", request.getEmaPeriod(), "emaPeriods");
+        List<Integer> smaPeriods = periods(request.getSmaPeriods(), request.getIndicators(), "SMA", request.getSmaPeriod(), "smaPeriods");
+        Integer bollingerPeriod = request.getBollingerPeriod();
+        boolean bollingerEnabled = bollingerPeriod != null;
+        if (bollingerEnabled) {
+            validatePeriod(bollingerPeriod, "bollingerPeriod");
+        } else {
+            bollingerPeriod = 20;
+        }
+        BigDecimal bollingerDeviation = request.getBollingerDeviation() == null ? BigDecimal.valueOf(2) : request.getBollingerDeviation();
+        if (bollingerDeviation.compareTo(new BigDecimal("0.1")) < 0 || bollingerDeviation.compareTo(BigDecimal.TEN) > 0) {
+            throw new IllegalArgumentException("bollingerDeviation은 0.1 이상 10 이하의 숫자여야 합니다.");
+        }
+        return new ChartQuery(
+                symbol,
+                interval,
+                limit,
+                before,
+                after,
+                direction,
+                emaPeriods,
+                smaPeriods,
+                bollingerEnabled,
+                bollingerPeriod,
+                bollingerDeviation,
+                Boolean.TRUE.equals(request.getVwap())
+        );
     }
 
-    private EnumSet<Indicator> parseIndicators(String value) {
-        EnumSet<Indicator> result = EnumSet.noneOf(Indicator.class);
-        if (value == null || value.isBlank()) {
-            return result;
-        }
-        for (String item : value.split(",")) {
-            try {
-                result.add(Indicator.valueOf(item.trim().toUpperCase(Locale.ROOT)));
-            } catch (IllegalArgumentException e) {
-                throw new IllegalArgumentException("지원 지표는 SMA, EMA, RSI, MACD입니다.");
+    private List<Integer> periods(String csv, String legacyIndicators, String legacyName, Integer legacyPeriod, String fieldName) {
+        LinkedHashSet<Integer> values = new LinkedHashSet<>();
+        if (csv != null && !csv.isBlank()) {
+            for (String item : csv.split(",")) {
+                try {
+                    int period = Integer.parseInt(item.trim());
+                    validatePeriod(period, fieldName);
+                    values.add(period);
+                } catch (NumberFormatException error) {
+                    throw new IllegalArgumentException(fieldName + "는 정수 CSV여야 합니다.");
+                }
             }
+        } else if (legacyIndicators != null && legacyIndicators.toUpperCase(Locale.ROOT).contains(legacyName)) {
+            int period = legacyPeriod == null ? 20 : legacyPeriod;
+            validatePeriod(period, fieldName);
+            values.add(period);
         }
-        return result;
+        if (values.size() > MAX_PERIOD_COUNT) {
+            throw new IllegalArgumentException(fieldName + "는 최대 " + MAX_PERIOD_COUNT + "개까지 요청할 수 있습니다.");
+        }
+        return List.copyOf(values);
     }
 
-    private int period(Integer value, int defaultValue, String name) {
-        int normalized = value == null ? defaultValue : value;
-        if (normalized < 2 || normalized > 200) {
-            throw new IllegalArgumentException(name + "는 2부터 200 사이여야 합니다.");
+    private void validatePeriod(int period, String fieldName) {
+        if (period < 1 || period > MAX_PERIOD) {
+            throw new IllegalArgumentException(fieldName + "는 1 이상 1000 이하의 정수여야 합니다.");
         }
-        return normalized;
     }
 
     private void evictCache(long now) {
@@ -302,41 +445,73 @@ public class ChartService {
                 .ifPresent(entry -> cache.remove(entry.getKey()));
     }
 
-    private enum Indicator { SMA, EMA, RSI, MACD }
+    private double millis(long nanos) {
+        return nanos / 1_000_000.0;
+    }
+
+    public interface TimedPoint {
+        Long time();
+    }
+
+    public record IndicatorPoint(Long time, BigDecimal value) implements TimedPoint {
+    }
+
+    public record MovingAverageSeries(int period, List<IndicatorPoint> points) {
+    }
+
+    public record BollingerPoint(Long time, BigDecimal middle, BigDecimal upper, BigDecimal lower) implements TimedPoint {
+    }
+
+    public record BollingerBandsSeries(int period, BigDecimal deviation, List<BollingerPoint> points) {
+    }
+
+    public record VwapSeries(List<IndicatorPoint> points) {
+    }
+
+    private enum ChartDirection {
+        LATEST,
+        OLDER,
+        NEWER
+    }
 
     private record ChartQuery(
             String symbol,
             String interval,
             int limit,
-            Long endTime,
-            EnumSet<Indicator> indicators,
-            int smaPeriod,
-            int emaPeriod,
-            int rsiPeriod,
-            int macdFastPeriod,
-            int macdSlowPeriod,
-            int macdSignalPeriod
+            Long before,
+            Long after,
+            ChartDirection direction,
+            List<Integer> emaPeriods,
+            List<Integer> smaPeriods,
+            boolean bollingerEnabled,
+            int bollingerPeriod,
+            BigDecimal bollingerDeviation,
+            boolean vwap
     ) {
+        private boolean hasIndicators() {
+            return !emaPeriods.isEmpty() || !smaPeriods.isEmpty() || bollingerEnabled || vwap;
+        }
     }
 
     private record ChartCacheKey(
             String symbol,
             String interval,
             int limit,
-            Long endTime,
-            String indicators,
-            int smaPeriod,
-            int emaPeriod,
-            int rsiPeriod,
-            int macdFastPeriod,
-            int macdSlowPeriod,
-            int macdSignalPeriod
+            Long before,
+            Long after,
+            ChartDirection direction,
+            List<Integer> emaPeriods,
+            List<Integer> smaPeriods,
+            boolean bollingerEnabled,
+            int bollingerPeriod,
+            String bollingerDeviation,
+            boolean vwap
     ) {
         private static ChartCacheKey from(ChartQuery query) {
             return new ChartCacheKey(
-                    query.symbol(), query.interval(), query.limit(), query.endTime(),
-                    query.indicators().toString(), query.smaPeriod(), query.emaPeriod(), query.rsiPeriod(),
-                    query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod()
+                    query.symbol(), query.interval(), query.limit(), query.before(), query.after(), query.direction(),
+                    query.emaPeriods(), query.smaPeriods(), query.bollingerEnabled(),
+                    query.bollingerPeriod(), query.bollingerDeviation().stripTrailingZeros().toPlainString(), query.vwap()
             );
         }
     }
