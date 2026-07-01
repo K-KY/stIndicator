@@ -55,6 +55,8 @@ import java.util.stream.Collectors;
 public class ManagedTradeService {
     private static final Logger log = LoggerFactory.getLogger(ManagedTradeService.class);
     private static final int MAX_UNMATCHED_ORDER_UPDATE_KEYS = 512;
+    private static final BigDecimal DEFAULT_EXTERNAL_ORDER_LEVERAGE = new BigDecimal("5");
+    private static final BigDecimal DEFAULT_EXTERNAL_ORDER_RISK_PERCENT = BigDecimal.ONE;
     private final ClientService clientService;
     private final ExchangeConnector exchangeConnector;
     private final PendingOrderJpaRepository pendingOrderRepository;
@@ -259,6 +261,7 @@ public class ManagedTradeService {
 
     @Transactional
     public List<PendingOrderEntity> pendingOrders(Long userId) {
+        synchronizeExchangeOpenOrders(userId);
         List<PendingOrderEntity> pendingOrders = pendingOrderRepository.findAllByUserIdAndStatusOrderByCreatedAtDesc(userId, PendingOrderStatus.PENDING);
         pendingOrders.forEach(this::repairPendingSizingIfNeeded);
         pendingOrders.forEach(this::normalizePendingPolicyIfNeeded);
@@ -266,6 +269,104 @@ public class ManagedTradeService {
                 .filter(order -> !order.isTestOrder())
                 .forEach(this::reconcilePendingRealOrder);
         return pendingOrderRepository.findAllByUserIdAndStatusOrderByCreatedAtDesc(userId, PendingOrderStatus.PENDING);
+    }
+
+    private void synchronizeExchangeOpenOrders(Long userId) {
+        List<Order> openOrders;
+        try {
+            openOrders = clientService.getOpenOrders();
+        } catch (RuntimeException error) {
+            log.warn("Binance open order sync skipped userId={}", userId, error);
+            return;
+        }
+        int imported = 0;
+        for (Order order : openOrders) {
+            if (!isImportableEntryOrder(order) || managedPendingOrderExists(order)) {
+                continue;
+            }
+            importExchangeOpenOrder(userId, order);
+            imported++;
+        }
+        log.info("Binance open order sync completed userId={}, exchangeOpenCount={}, imported={}",
+                userId, openOrders.size(), imported);
+    }
+
+    private boolean managedPendingOrderExists(Order order) {
+        if (order == null) {
+            return false;
+        }
+        if (!isBlank(order.getOrderId()) && pendingOrderRepository.findFirstByOrderId(order.getOrderId()).isPresent()) {
+            return true;
+        }
+        return !isBlank(order.getClientOrderId())
+                && pendingOrderRepository.findFirstByClientOrderId(order.getClientOrderId()).isPresent();
+    }
+
+    private boolean isImportableEntryOrder(Order order) {
+        if (order == null) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(order.getReduceOnly()) || Boolean.TRUE.equals(order.getClosePosition())) {
+            return false;
+        }
+        if (!"LIMIT".equalsIgnoreCase(order.getType())) {
+            return false;
+        }
+        if (!"BUY".equalsIgnoreCase(order.getSide()) && !"SELL".equalsIgnoreCase(order.getSide())) {
+            return false;
+        }
+        return !isBlank(order.getSymbol())
+                && !isBlank(order.getOrderId())
+                && isPositive(firstPositive(order.getPrice(), order.getAvgPrice()))
+                && isPositive(order.getOrigQty());
+    }
+
+    private PendingOrderEntity importExchangeOpenOrder(Long userId, Order order) {
+        BigDecimal entryPrice = firstPositive(order.getPrice(), order.getAvgPrice());
+        BigDecimal quantity = order.getOrigQty();
+        BigDecimal leverage = DEFAULT_EXTERNAL_ORDER_LEVERAGE;
+        BigDecimal requiredMargin = entryPrice.multiply(quantity).divide(leverage, 18, RoundingMode.HALF_UP);
+        BigDecimal possibleLoss = requiredMargin.multiply(DEFAULT_EXTERNAL_ORDER_RISK_PERCENT)
+                .divide(new BigDecimal("100"), 8, RoundingMode.HALF_UP);
+        BigDecimal possibleProfit = possibleLoss;
+        BigDecimal priceMove = possibleLoss.divide(quantity, 8, RoundingMode.HALF_UP);
+        boolean longSide = "BUY".equalsIgnoreCase(order.getSide());
+        BigDecimal stopPrice = longSide ? entryPrice.subtract(priceMove) : entryPrice.add(priceMove);
+        BigDecimal targetPrice = longSide ? entryPrice.add(priceMove) : entryPrice.subtract(priceMove);
+        PendingOrderEntity pending = PendingOrderEntity.create(
+                userId,
+                order.getSymbol().toUpperCase(Locale.ROOT),
+                normalizeSide(order.getSide()),
+                order.getOrderId(),
+                order.getClientOrderId(),
+                entryPrice,
+                quantity,
+                stopPrice,
+                targetPrice,
+                possibleLoss,
+                possibleProfit,
+                leverage,
+                requiredMargin,
+                TriggerBasis.PNL_PERCENT,
+                TriggerBasis.PNL_PERCENT,
+                null,
+                null,
+                DEFAULT_EXTERNAL_ORDER_RISK_PERCENT,
+                ManagedOrderMode.FIXED_TP_SL,
+                false,
+                null,
+                null,
+                null,
+                null,
+                TradeExecutionMode.REAL
+        );
+        PendingOrderEntity saved = pendingOrderRepository.save(pending);
+        multiPlexManager.subscribeMarkPrice(saved.getSymbol());
+        log.info("external Binance open order imported userId={}, pendingId={}, symbol={}, side={}, orderId={}, entryPrice={}, quantity={}, leverage={}, requiredMargin={}, stopBasis={}, takeProfitBasis={}",
+                userId, saved.getId(), saved.getSymbol(), saved.getSide(), saved.getOrderId(),
+                saved.getEntryPrice(), saved.getQuantity(), saved.getLeverage(), saved.getRequiredMargin(),
+                saved.getStopTriggerBasis(), saved.getTakeProfitTriggerBasis());
+        return saved;
     }
 
     private void reconcilePendingRealOrder(PendingOrderEntity pending) {
@@ -485,6 +586,18 @@ public class ManagedTradeService {
 
     private boolean isPositive(BigDecimal value) {
         return value != null && value.signum() > 0;
+    }
+
+    private BigDecimal firstPositive(BigDecimal... values) {
+        if (values == null) {
+            return null;
+        }
+        for (BigDecimal value : values) {
+            if (isPositive(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     @Transactional

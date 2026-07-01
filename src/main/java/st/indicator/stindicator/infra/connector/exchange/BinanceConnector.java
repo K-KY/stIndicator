@@ -39,6 +39,7 @@ public class BinanceConnector implements ExchangeConnector {
     private static final String EXCHANGE_INFO_PATH = "https://fapi.binance.com/fapi/v1/exchangeInfo";
     private static final String TICKER_24HR_PATH = "https://fapi.binance.com/fapi/v1/ticker/24hr";
     private static final String PRICE_PATH = "https://fapi.binance.com/fapi/v1/ticker/price";
+    private static final String OPEN_ORDERS_PATH = "https://fapi.binance.com/fapi/v1/openOrders";
     private static final String AVAILABLE_BALANCE = "availableBalance";
     private static final CandleMapper candleMapper = new CandleMapper();
     private final ExchangeClient exchangeClient;
@@ -215,6 +216,24 @@ public class BinanceConnector implements ExchangeConnector {
         String response = exchangeClient.get(PRICE_PATH, params);
         JsonNode priceNode = readSuccessTree(response, "symbol price");
         return new SymbolPrice(requiredText(priceNode, "symbol", "symbol price"), requiredDecimal(priceNode, "price", "symbol price"));
+    }
+
+    @Override
+    public List<Order> openOrders(Map<String, String> params) {
+        try {
+            String response = exchangeClient.get(OPEN_ORDERS_PATH, params);
+            JsonNode root = readSuccessTree(response, "open orders");
+            if (root == null || !root.isArray()) {
+                throw new IllegalStateException("Binance open orders response must be an array");
+            }
+            List<Order> orders = new ArrayList<>();
+            for (JsonNode orderNode : root) {
+                orders.add(objectMapper.readValue(orderNode.toString(), Order.class));
+            }
+            return orders;
+        } catch (NoSuchAlgorithmException | InvalidKeyException | IOException | InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override

@@ -167,6 +167,18 @@ public class BinanceClient implements ClientService {
     }
 
     @Override
+    public List<Order> getOpenOrders() {
+        long currentTimeMillis = System.currentTimeMillis();
+        log.info("flow getOpenOrders start timestamp={}", currentTimeMillis);
+        List<Order> orders = exchangeConnector.openOrders(Map.of(
+                "timestamp", String.valueOf(currentTimeMillis),
+                "recvWindow", "5000"
+        ));
+        log.info("flow getOpenOrders done count={}, taken={}", orders.size(), System.currentTimeMillis() - currentTimeMillis);
+        return orders;
+    }
+
+    @Override
     public Order getOrderDetail(String symbol, String orderId) {
         log.info("flow getOrderDetail start symbol={}, orderId={}", symbol, orderId);
         return exchangeConnector.orderDetail(Map.of(

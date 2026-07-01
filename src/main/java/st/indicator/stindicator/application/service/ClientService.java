@@ -17,6 +17,7 @@ import java.util.List;
 public interface ClientService {
     Order getOrderDetail(String symbol, String orderId);//주문 상세 조회
     Order cancelOrder(String symbol, String orderId);//주문 취소
+    List<Order> getOpenOrders();//거래소 미체결 주문 목록 조회
 
     BigDecimal getBalance();//지갑 조회
     List<Candle> getCandles(CandleCommand dto);//캔들 데이터 조회
