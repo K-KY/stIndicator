@@ -33,7 +33,7 @@ public class ChartIndicatorSettingEntity {
     private UserEntity user;
 
     @Lob
-    @Column(nullable = false)
+    @Column(name = "settings_json", nullable = false, columnDefinition = "LONGTEXT")
     private String settingsJson;
 
     @Column(nullable = false)
