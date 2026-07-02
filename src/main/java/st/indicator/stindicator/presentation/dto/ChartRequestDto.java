@@ -42,6 +42,10 @@ public class ChartRequestDto {
     private Integer macdSlowPeriod;
     @Schema(description = "MACD signal EMA 기간", example = "9")
     private Integer macdSignalPeriod;
+    @Schema(description = "ADX/DMI DI 기간", example = "14")
+    private Integer adxDiPeriod;
+    @Schema(description = "ADX smoothing 기간", example = "14")
+    private Integer adxSmoothingPeriod;
 
     public String getSymbol() { return symbol; }
     public String getInterval() { return interval; }
@@ -61,6 +65,8 @@ public class ChartRequestDto {
     public Integer getMacdFastPeriod() { return macdFastPeriod; }
     public Integer getMacdSlowPeriod() { return macdSlowPeriod; }
     public Integer getMacdSignalPeriod() { return macdSignalPeriod; }
+    public Integer getAdxDiPeriod() { return adxDiPeriod; }
+    public Integer getAdxSmoothingPeriod() { return adxSmoothingPeriod; }
 
     public void setSymbol(String symbol) { this.symbol = symbol; }
     public void setInterval(String interval) { this.interval = interval; }
@@ -80,4 +86,6 @@ public class ChartRequestDto {
     public void setMacdFastPeriod(Integer macdFastPeriod) { this.macdFastPeriod = macdFastPeriod; }
     public void setMacdSlowPeriod(Integer macdSlowPeriod) { this.macdSlowPeriod = macdSlowPeriod; }
     public void setMacdSignalPeriod(Integer macdSignalPeriod) { this.macdSignalPeriod = macdSignalPeriod; }
+    public void setAdxDiPeriod(Integer adxDiPeriod) { this.adxDiPeriod = adxDiPeriod; }
+    public void setAdxSmoothingPeriod(Integer adxSmoothingPeriod) { this.adxSmoothingPeriod = adxSmoothingPeriod; }
 }

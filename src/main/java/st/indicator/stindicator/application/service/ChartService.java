@@ -34,7 +34,7 @@ public class ChartService {
     private static final int MAX_LIMIT = 500;
     private static final int MAX_PERIOD = 1000;
     private static final int MAX_PERIOD_COUNT = 20;
-    private static final int MAX_WARMUP = 500;
+    private static final int MAX_WARMUP = 900;
     private static final int MAX_FETCH_LIMIT = 1000;
     private static final Set<String> SUPPORTED_INTERVALS = Set.of("1m", "5m", "15m", "1h", "4h", "1d");
     private static final Duration LATEST_TTL = Duration.ofSeconds(20);
@@ -166,6 +166,7 @@ public class ChartService {
         Map<Long, Candle> byOpenTime = new LinkedHashMap<>();
         candles.stream()
                 .filter(candle -> candle.getOpenTime() != null)
+                .filter(candle -> candle.getHigh() != null && candle.getLow() != null && candle.getClose() != null)
                 .sorted(Comparator.comparing(Candle::getOpenTime))
                 .forEach(candle -> byOpenTime.put(candle.getOpenTime(), candle));
         return new ArrayList<>(byOpenTime.values());
@@ -197,6 +198,32 @@ public class ChartService {
         }
         if (query.vwap()) {
             result.put("vwap", new VwapSeries(visible(vwapPoints(candles), visibleOpenTime)));
+        }
+        if (query.rsiEnabled()) {
+            long startedAt = System.nanoTime();
+            result.put("rsi", new RsiSeries(query.rsiPeriod(), visible(rsiPoints(candles, query.rsiPeriod()), visibleOpenTime)));
+            log.debug("chart RSI calculated period={}, ms={}", query.rsiPeriod(), millis(System.nanoTime() - startedAt));
+        }
+        if (query.macdEnabled()) {
+            long startedAt = System.nanoTime();
+            result.put("macd", new MacdSeries(
+                    query.macdFastPeriod(),
+                    query.macdSlowPeriod(),
+                    query.macdSignalPeriod(),
+                    visible(macdPoints(candles, query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod()), visibleOpenTime)
+            ));
+            log.debug("chart MACD calculated fast={}, slow={}, signal={}, ms={}",
+                    query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod(), millis(System.nanoTime() - startedAt));
+        }
+        if (query.adxDmiEnabled()) {
+            long startedAt = System.nanoTime();
+            result.put("adxDmi", new AdxDmiSeries(
+                    query.adxDiPeriod(),
+                    query.adxSmoothingPeriod(),
+                    visible(adxDmiPoints(candles, query.adxDiPeriod(), query.adxSmoothingPeriod()), visibleOpenTime)
+            ));
+            log.debug("chart ADX/DMI calculated di={}, smoothing={}, ms={}",
+                    query.adxDiPeriod(), query.adxSmoothingPeriod(), millis(System.nanoTime() - startedAt));
         }
         return result;
     }
@@ -301,6 +328,198 @@ public class ChartService {
         return result;
     }
 
+    public List<IndicatorPoint> rsiPoints(List<Candle> candles, int period) {
+        validatePeriod(period, "rsiPeriod");
+        List<IndicatorPoint> result = new ArrayList<>();
+        if (candles.size() < period + 1) {
+            return result;
+        }
+        BigDecimal gainSum = BigDecimal.ZERO;
+        BigDecimal lossSum = BigDecimal.ZERO;
+        for (int index = 1; index <= period; index++) {
+            BigDecimal change = candles.get(index).getClose().subtract(candles.get(index - 1).getClose());
+            if (change.signum() >= 0) {
+                gainSum = gainSum.add(change);
+            } else {
+                lossSum = lossSum.add(change.abs());
+            }
+        }
+        BigDecimal averageGain = gainSum.divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
+        BigDecimal averageLoss = lossSum.divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
+        result.add(new IndicatorPoint(candles.get(period).getOpenTime(), rsiValue(averageGain, averageLoss)));
+        for (int index = period + 1; index < candles.size(); index++) {
+            BigDecimal change = candles.get(index).getClose().subtract(candles.get(index - 1).getClose());
+            BigDecimal gain = change.signum() > 0 ? change : BigDecimal.ZERO;
+            BigDecimal loss = change.signum() < 0 ? change.abs() : BigDecimal.ZERO;
+            averageGain = averageGain.multiply(BigDecimal.valueOf(period - 1L)).add(gain)
+                    .divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
+            averageLoss = averageLoss.multiply(BigDecimal.valueOf(period - 1L)).add(loss)
+                    .divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
+            result.add(new IndicatorPoint(candles.get(index).getOpenTime(), rsiValue(averageGain, averageLoss)));
+        }
+        return result;
+    }
+
+    private BigDecimal rsiValue(BigDecimal averageGain, BigDecimal averageLoss) {
+        if (averageLoss.signum() == 0 && averageGain.signum() == 0) {
+            return BigDecimal.valueOf(50);
+        }
+        if (averageLoss.signum() == 0) {
+            return BigDecimal.valueOf(100);
+        }
+        if (averageGain.signum() == 0) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal relativeStrength = averageGain.divide(averageLoss, 18, RoundingMode.HALF_UP);
+        BigDecimal value = BigDecimal.valueOf(100).subtract(
+                BigDecimal.valueOf(100).divide(BigDecimal.ONE.add(relativeStrength), 18, RoundingMode.HALF_UP)
+        );
+        return clampZeroToHundred(value);
+    }
+
+    public List<MacdPoint> macdPoints(List<Candle> candles, int fastPeriod, int slowPeriod, int signalPeriod) {
+        validateMacd(fastPeriod, slowPeriod, signalPeriod);
+        List<IndicatorPoint> fast = emaPoints(candles, fastPeriod);
+        List<IndicatorPoint> slow = emaPoints(candles, slowPeriod);
+        Map<Long, BigDecimal> fastByTime = pointsByTime(fast);
+        List<IndicatorPoint> macdLine = new ArrayList<>();
+        for (IndicatorPoint slowPoint : slow) {
+            BigDecimal fastValue = fastByTime.get(slowPoint.time());
+            if (fastValue != null) {
+                macdLine.add(new IndicatorPoint(slowPoint.time(), fastValue.subtract(slowPoint.value())));
+            }
+        }
+        List<IndicatorPoint> signalLine = emaIndicatorPoints(macdLine, signalPeriod);
+        Map<Long, BigDecimal> signalByTime = pointsByTime(signalLine);
+        List<MacdPoint> result = new ArrayList<>();
+        for (IndicatorPoint macd : macdLine) {
+            BigDecimal signal = signalByTime.get(macd.time());
+            result.add(new MacdPoint(
+                    macd.time(),
+                    macd.value(),
+                    signal,
+                    signal == null ? null : macd.value().subtract(signal)
+            ));
+        }
+        return result;
+    }
+
+    private List<IndicatorPoint> emaIndicatorPoints(List<IndicatorPoint> points, int period) {
+        validatePeriod(period, "signalPeriod");
+        List<IndicatorPoint> result = new ArrayList<>();
+        if (points.size() < period) {
+            return result;
+        }
+        BigDecimal seed = BigDecimal.ZERO;
+        for (int index = 0; index < period; index++) {
+            seed = seed.add(points.get(index).value());
+        }
+        seed = seed.divide(BigDecimal.valueOf(period), 18, RoundingMode.HALF_UP);
+        result.add(new IndicatorPoint(points.get(period - 1).time(), seed));
+        BigDecimal alpha = BigDecimal.valueOf(2)
+                .divide(BigDecimal.valueOf(period + 1L), 18, RoundingMode.HALF_UP);
+        BigDecimal previous = seed;
+        for (int index = period; index < points.size(); index++) {
+            previous = points.get(index).value().multiply(alpha)
+                    .add(previous.multiply(BigDecimal.ONE.subtract(alpha)));
+            result.add(new IndicatorPoint(points.get(index).time(), previous));
+        }
+        return result;
+    }
+
+    private Map<Long, BigDecimal> pointsByTime(List<IndicatorPoint> points) {
+        Map<Long, BigDecimal> result = new LinkedHashMap<>();
+        points.forEach(point -> result.put(point.time(), point.value()));
+        return result;
+    }
+
+    public List<AdxDmiPoint> adxDmiPoints(List<Candle> candles, int diPeriod, int adxSmoothingPeriod) {
+        validatePeriod(diPeriod, "adxDiPeriod");
+        validatePeriod(adxSmoothingPeriod, "adxSmoothingPeriod");
+        List<AdxDmiPoint> result = new ArrayList<>();
+        if (candles.size() < diPeriod + 1) {
+            return result;
+        }
+        List<DirectionalMovement> movements = new ArrayList<>();
+        for (int index = 1; index < candles.size(); index++) {
+            Candle current = candles.get(index);
+            Candle previous = candles.get(index - 1);
+            BigDecimal highLow = current.getHigh().subtract(current.getLow()).abs();
+            BigDecimal highClose = current.getHigh().subtract(previous.getClose()).abs();
+            BigDecimal lowClose = current.getLow().subtract(previous.getClose()).abs();
+            BigDecimal trueRange = highLow.max(highClose).max(lowClose);
+            BigDecimal upMove = current.getHigh().subtract(previous.getHigh());
+            BigDecimal downMove = previous.getLow().subtract(current.getLow());
+            BigDecimal plusDm = upMove.compareTo(downMove) > 0 && upMove.signum() > 0 ? upMove : BigDecimal.ZERO;
+            BigDecimal minusDm = downMove.compareTo(upMove) > 0 && downMove.signum() > 0 ? downMove : BigDecimal.ZERO;
+            movements.add(new DirectionalMovement(current.getOpenTime(), trueRange, plusDm, minusDm));
+        }
+        if (movements.size() < diPeriod) {
+            return result;
+        }
+        BigDecimal smoothedTr = BigDecimal.ZERO;
+        BigDecimal smoothedPlusDm = BigDecimal.ZERO;
+        BigDecimal smoothedMinusDm = BigDecimal.ZERO;
+        for (int index = 0; index < diPeriod; index++) {
+            DirectionalMovement movement = movements.get(index);
+            smoothedTr = smoothedTr.add(movement.trueRange());
+            smoothedPlusDm = smoothedPlusDm.add(movement.plusDm());
+            smoothedMinusDm = smoothedMinusDm.add(movement.minusDm());
+        }
+        List<IndicatorPoint> dxPoints = new ArrayList<>();
+        addDmiPoint(result, dxPoints, movements.get(diPeriod - 1).time(), smoothedTr, smoothedPlusDm, smoothedMinusDm, null);
+        BigDecimal previousAdx = null;
+        for (int index = diPeriod; index < movements.size(); index++) {
+            DirectionalMovement movement = movements.get(index);
+            smoothedTr = smoothedTr.subtract(smoothedTr.divide(BigDecimal.valueOf(diPeriod), 18, RoundingMode.HALF_UP))
+                    .add(movement.trueRange());
+            smoothedPlusDm = smoothedPlusDm.subtract(smoothedPlusDm.divide(BigDecimal.valueOf(diPeriod), 18, RoundingMode.HALF_UP))
+                    .add(movement.plusDm());
+            smoothedMinusDm = smoothedMinusDm.subtract(smoothedMinusDm.divide(BigDecimal.valueOf(diPeriod), 18, RoundingMode.HALF_UP))
+                    .add(movement.minusDm());
+            if (previousAdx == null && dxPoints.size() >= adxSmoothingPeriod) {
+                previousAdx = dxPoints.stream()
+                        .skip(dxPoints.size() - adxSmoothingPeriod)
+                        .map(IndicatorPoint::value)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add)
+                        .divide(BigDecimal.valueOf(adxSmoothingPeriod), 18, RoundingMode.HALF_UP);
+            } else if (previousAdx != null && !dxPoints.isEmpty()) {
+                BigDecimal currentDx = dxPoints.getLast().value();
+                previousAdx = previousAdx.multiply(BigDecimal.valueOf(adxSmoothingPeriod - 1L)).add(currentDx)
+                        .divide(BigDecimal.valueOf(adxSmoothingPeriod), 18, RoundingMode.HALF_UP);
+            }
+            addDmiPoint(result, dxPoints, movement.time(), smoothedTr, smoothedPlusDm, smoothedMinusDm, previousAdx);
+        }
+        return result;
+    }
+
+    private void addDmiPoint(List<AdxDmiPoint> result, List<IndicatorPoint> dxPoints, Long time,
+                             BigDecimal smoothedTr, BigDecimal smoothedPlusDm, BigDecimal smoothedMinusDm,
+                             BigDecimal adx) {
+        BigDecimal plusDi = smoothedTr.signum() == 0
+                ? BigDecimal.ZERO
+                : BigDecimal.valueOf(100).multiply(smoothedPlusDm).divide(smoothedTr, 18, RoundingMode.HALF_UP);
+        BigDecimal minusDi = smoothedTr.signum() == 0
+                ? BigDecimal.ZERO
+                : BigDecimal.valueOf(100).multiply(smoothedMinusDm).divide(smoothedTr, 18, RoundingMode.HALF_UP);
+        plusDi = clampZeroToHundred(plusDi);
+        minusDi = clampZeroToHundred(minusDi);
+        BigDecimal denominator = plusDi.add(minusDi);
+        BigDecimal dx = denominator.signum() == 0
+                ? BigDecimal.ZERO
+                : BigDecimal.valueOf(100).multiply(plusDi.subtract(minusDi).abs()).divide(denominator, 18, RoundingMode.HALF_UP);
+        dx = clampZeroToHundred(dx);
+        dxPoints.add(new IndicatorPoint(time, dx));
+        result.add(new AdxDmiPoint(time, adx == null ? null : clampZeroToHundred(adx), plusDi, minusDi));
+    }
+
+    private BigDecimal clampZeroToHundred(BigDecimal value) {
+        if (value == null) {
+            return null;
+        }
+        return value.max(BigDecimal.ZERO).min(BigDecimal.valueOf(100));
+    }
+
     private BigDecimal sqrt(BigDecimal value) {
         if (value.signum() <= 0) {
             return BigDecimal.ZERO;
@@ -327,6 +546,21 @@ public class ChartService {
         }
         for (Integer period : query.emaPeriods()) {
             warmup = Math.max(warmup, Math.max(period * 3, period + 100));
+        }
+        if (query.rsiEnabled()) {
+            warmup = Math.max(warmup, Math.max(query.rsiPeriod() * 5, query.rsiPeriod() + 100));
+        }
+        if (query.macdEnabled()) {
+            warmup = Math.max(warmup, Math.max(
+                    query.macdSlowPeriod() * 5 + query.macdSignalPeriod() * 3,
+                    query.macdSlowPeriod() + query.macdSignalPeriod() + 100
+            ));
+        }
+        if (query.adxDmiEnabled()) {
+            warmup = Math.max(warmup, Math.max(
+                    query.adxDiPeriod() * 5 + query.adxSmoothingPeriod() * 5,
+                    query.adxDiPeriod() + query.adxSmoothingPeriod() + 100
+            ));
         }
         if (query.vwap()) {
             long intervalMillis = intervalMillis(query.interval());
@@ -379,6 +613,32 @@ public class ChartService {
         ChartDirection direction = before != null ? ChartDirection.OLDER : after != null ? ChartDirection.NEWER : ChartDirection.LATEST;
         List<Integer> emaPeriods = periods(request.getEmaPeriods(), request.getIndicators(), "EMA", request.getEmaPeriod(), "emaPeriods");
         List<Integer> smaPeriods = periods(request.getSmaPeriods(), request.getIndicators(), "SMA", request.getSmaPeriod(), "smaPeriods");
+        boolean rsiEnabled = request.getRsiPeriod() != null
+                || containsLegacyIndicator(request.getIndicators(), "RSI");
+        int rsiPeriod = request.getRsiPeriod() == null ? 14 : request.getRsiPeriod();
+        if (rsiEnabled) {
+            validatePeriod(rsiPeriod, "rsiPeriod");
+        }
+        boolean macdEnabled = request.getMacdFastPeriod() != null
+                || request.getMacdSlowPeriod() != null
+                || request.getMacdSignalPeriod() != null
+                || containsLegacyIndicator(request.getIndicators(), "MACD");
+        int macdFastPeriod = request.getMacdFastPeriod() == null ? 12 : request.getMacdFastPeriod();
+        int macdSlowPeriod = request.getMacdSlowPeriod() == null ? 26 : request.getMacdSlowPeriod();
+        int macdSignalPeriod = request.getMacdSignalPeriod() == null ? 9 : request.getMacdSignalPeriod();
+        if (macdEnabled) {
+            validateMacd(macdFastPeriod, macdSlowPeriod, macdSignalPeriod);
+        }
+        boolean adxDmiEnabled = request.getAdxDiPeriod() != null
+                || request.getAdxSmoothingPeriod() != null
+                || containsLegacyIndicator(request.getIndicators(), "ADX")
+                || containsLegacyIndicator(request.getIndicators(), "DMI");
+        int adxDiPeriod = request.getAdxDiPeriod() == null ? 14 : request.getAdxDiPeriod();
+        int adxSmoothingPeriod = request.getAdxSmoothingPeriod() == null ? 14 : request.getAdxSmoothingPeriod();
+        if (adxDmiEnabled) {
+            validatePeriod(adxDiPeriod, "adxDiPeriod");
+            validatePeriod(adxSmoothingPeriod, "adxSmoothingPeriod");
+        }
         Integer bollingerPeriod = request.getBollingerPeriod();
         boolean bollingerEnabled = bollingerPeriod != null;
         if (bollingerEnabled) {
@@ -402,8 +662,21 @@ public class ChartService {
                 bollingerEnabled,
                 bollingerPeriod,
                 bollingerDeviation,
-                Boolean.TRUE.equals(request.getVwap())
+                Boolean.TRUE.equals(request.getVwap()),
+                rsiEnabled,
+                rsiPeriod,
+                macdEnabled,
+                macdFastPeriod,
+                macdSlowPeriod,
+                macdSignalPeriod,
+                adxDmiEnabled,
+                adxDiPeriod,
+                adxSmoothingPeriod
         );
+    }
+
+    private boolean containsLegacyIndicator(String indicators, String name) {
+        return indicators != null && indicators.toUpperCase(Locale.ROOT).contains(name);
     }
 
     private List<Integer> periods(String csv, String legacyIndicators, String legacyName, Integer legacyPeriod, String fieldName) {
@@ -432,6 +705,15 @@ public class ChartService {
     private void validatePeriod(int period, String fieldName) {
         if (period < 1 || period > MAX_PERIOD) {
             throw new IllegalArgumentException(fieldName + "는 1 이상 1000 이하의 정수여야 합니다.");
+        }
+    }
+
+    private void validateMacd(int fastPeriod, int slowPeriod, int signalPeriod) {
+        validatePeriod(fastPeriod, "macdFastPeriod");
+        validatePeriod(slowPeriod, "macdSlowPeriod");
+        validatePeriod(signalPeriod, "macdSignalPeriod");
+        if (fastPeriod >= slowPeriod) {
+            throw new IllegalArgumentException("macdFastPeriod는 macdSlowPeriod보다 작아야 합니다.");
         }
     }
 
@@ -468,6 +750,24 @@ public class ChartService {
     public record VwapSeries(List<IndicatorPoint> points) {
     }
 
+    public record RsiSeries(int period, List<IndicatorPoint> points) {
+    }
+
+    public record MacdPoint(Long time, BigDecimal macd, BigDecimal signal, BigDecimal histogram) implements TimedPoint {
+    }
+
+    public record MacdSeries(int fastPeriod, int slowPeriod, int signalPeriod, List<MacdPoint> points) {
+    }
+
+    public record AdxDmiPoint(Long time, BigDecimal adx, BigDecimal plusDi, BigDecimal minusDi) implements TimedPoint {
+    }
+
+    public record AdxDmiSeries(int diPeriod, int adxSmoothingPeriod, List<AdxDmiPoint> points) {
+    }
+
+    private record DirectionalMovement(Long time, BigDecimal trueRange, BigDecimal plusDm, BigDecimal minusDm) {
+    }
+
     private enum ChartDirection {
         LATEST,
         OLDER,
@@ -486,10 +786,20 @@ public class ChartService {
             boolean bollingerEnabled,
             int bollingerPeriod,
             BigDecimal bollingerDeviation,
-            boolean vwap
+            boolean vwap,
+            boolean rsiEnabled,
+            int rsiPeriod,
+            boolean macdEnabled,
+            int macdFastPeriod,
+            int macdSlowPeriod,
+            int macdSignalPeriod,
+            boolean adxDmiEnabled,
+            int adxDiPeriod,
+            int adxSmoothingPeriod
     ) {
         private boolean hasIndicators() {
-            return !emaPeriods.isEmpty() || !smaPeriods.isEmpty() || bollingerEnabled || vwap;
+            return !emaPeriods.isEmpty() || !smaPeriods.isEmpty() || bollingerEnabled || vwap
+                    || rsiEnabled || macdEnabled || adxDmiEnabled;
         }
     }
 
@@ -505,13 +815,25 @@ public class ChartService {
             boolean bollingerEnabled,
             int bollingerPeriod,
             String bollingerDeviation,
-            boolean vwap
+            boolean vwap,
+            boolean rsiEnabled,
+            int rsiPeriod,
+            boolean macdEnabled,
+            int macdFastPeriod,
+            int macdSlowPeriod,
+            int macdSignalPeriod,
+            boolean adxDmiEnabled,
+            int adxDiPeriod,
+            int adxSmoothingPeriod
     ) {
         private static ChartCacheKey from(ChartQuery query) {
             return new ChartCacheKey(
                     query.symbol(), query.interval(), query.limit(), query.before(), query.after(), query.direction(),
                     query.emaPeriods(), query.smaPeriods(), query.bollingerEnabled(),
-                    query.bollingerPeriod(), query.bollingerDeviation().stripTrailingZeros().toPlainString(), query.vwap()
+                    query.bollingerPeriod(), query.bollingerDeviation().stripTrailingZeros().toPlainString(), query.vwap(),
+                    query.rsiEnabled(), query.rsiPeriod(),
+                    query.macdEnabled(), query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod(),
+                    query.adxDmiEnabled(), query.adxDiPeriod(), query.adxSmoothingPeriod()
             );
         }
     }
