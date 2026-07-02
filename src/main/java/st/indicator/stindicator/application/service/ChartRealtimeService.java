@@ -312,6 +312,51 @@ public class ChartRealtimeService {
                             "value", point.value().toPlainString()
                     )));
         }
+        if (config.rsiPeriod() != null) {
+            Map<String, Object> rsi = latestPoint(chartService.rsiPoints(candles, config.rsiPeriod()), config.rsiPeriod(), openTime);
+            if (!rsi.isEmpty()) {
+                result.put("rsi", rsi);
+            }
+        }
+        if (config.macdFastPeriod() != null) {
+            chartService.macdPoints(candles, config.macdFastPeriod(), config.macdSlowPeriod(), config.macdSignalPeriod())
+                    .stream()
+                    .filter(point -> point.time() == openTime)
+                    .reduce((first, second) -> second)
+                    .ifPresent(point -> {
+                        Map<String, Object> macd = new LinkedHashMap<>();
+                        macd.put("fastPeriod", config.macdFastPeriod());
+                        macd.put("slowPeriod", config.macdSlowPeriod());
+                        macd.put("signalPeriod", config.macdSignalPeriod());
+                        macd.put("time", point.time());
+                        macd.put("macd", point.macd().toPlainString());
+                        if (point.signal() != null) {
+                            macd.put("signal", point.signal().toPlainString());
+                        }
+                        if (point.histogram() != null) {
+                            macd.put("histogram", point.histogram().toPlainString());
+                        }
+                        result.put("macd", macd);
+                    });
+        }
+        if (config.adxDiPeriod() != null) {
+            chartService.adxDmiPoints(candles, config.adxDiPeriod(), config.adxSmoothingPeriod())
+                    .stream()
+                    .filter(point -> point.time() == openTime)
+                    .reduce((first, second) -> second)
+                    .ifPresent(point -> {
+                        Map<String, Object> adxDmi = new LinkedHashMap<>();
+                        adxDmi.put("diPeriod", config.adxDiPeriod());
+                        adxDmi.put("adxSmoothingPeriod", config.adxSmoothingPeriod());
+                        adxDmi.put("time", point.time());
+                        if (point.adx() != null) {
+                            adxDmi.put("adx", point.adx().toPlainString());
+                        }
+                        adxDmi.put("plusDi", point.plusDi().toPlainString());
+                        adxDmi.put("minusDi", point.minusDi().toPlainString());
+                        result.put("adxDmi", adxDmi);
+                    });
+        }
         return result;
     }
 
@@ -396,7 +441,13 @@ public class ChartRealtimeService {
             List<Integer> smaPeriods,
             Integer bollingerPeriod,
             BigDecimal bollingerDeviation,
-            boolean vwap
+            boolean vwap,
+            Integer rsiPeriod,
+            Integer macdFastPeriod,
+            Integer macdSlowPeriod,
+            Integer macdSignalPeriod,
+            Integer adxDiPeriod,
+            Integer adxSmoothingPeriod
     ) {
         private static ChartIndicatorConfig from(SymbolMonitorDto request) {
             Integer bollingerPeriod = request.getBollingerPeriod();
@@ -407,12 +458,39 @@ public class ChartRealtimeService {
             if (deviation.compareTo(new BigDecimal("0.1")) < 0 || deviation.compareTo(BigDecimal.TEN) > 0) {
                 throw new IllegalArgumentException("bollingerDeviation must be between 0.1 and 10");
             }
+            Integer rsiPeriod = request.getRsiPeriod();
+            if (rsiPeriod != null) {
+                validatePeriod(rsiPeriod, "rsiPeriod");
+            }
+            Integer macdFastPeriod = request.getMacdFastPeriod();
+            Integer macdSlowPeriod = request.getMacdSlowPeriod();
+            Integer macdSignalPeriod = request.getMacdSignalPeriod();
+            if (macdFastPeriod != null || macdSlowPeriod != null || macdSignalPeriod != null) {
+                macdFastPeriod = macdFastPeriod == null ? 12 : macdFastPeriod;
+                macdSlowPeriod = macdSlowPeriod == null ? 26 : macdSlowPeriod;
+                macdSignalPeriod = macdSignalPeriod == null ? 9 : macdSignalPeriod;
+                validateMacd(macdFastPeriod, macdSlowPeriod, macdSignalPeriod);
+            }
+            Integer adxDiPeriod = request.getAdxDiPeriod();
+            Integer adxSmoothingPeriod = request.getAdxSmoothingPeriod();
+            if (adxDiPeriod != null || adxSmoothingPeriod != null) {
+                adxDiPeriod = adxDiPeriod == null ? 14 : adxDiPeriod;
+                adxSmoothingPeriod = adxSmoothingPeriod == null ? 14 : adxSmoothingPeriod;
+                validatePeriod(adxDiPeriod, "adxDiPeriod");
+                validatePeriod(adxSmoothingPeriod, "adxSmoothingPeriod");
+            }
             return new ChartIndicatorConfig(
                     normalizePeriods(request.getEmaPeriods()),
                     normalizePeriods(request.getSmaPeriods()),
                     bollingerPeriod,
                     deviation,
-                    Boolean.TRUE.equals(request.getVwap())
+                    Boolean.TRUE.equals(request.getVwap()),
+                    rsiPeriod,
+                    macdFastPeriod,
+                    macdSlowPeriod,
+                    macdSignalPeriod,
+                    adxDiPeriod,
+                    adxSmoothingPeriod
             );
         }
 
@@ -436,6 +514,15 @@ public class ChartRealtimeService {
                 throw new IllegalArgumentException(fieldName + " must be between 1 and " + MAX_PERIOD);
             }
         }
+
+        private static void validateMacd(Integer fastPeriod, Integer slowPeriod, Integer signalPeriod) {
+            validatePeriod(fastPeriod, "macdFastPeriod");
+            validatePeriod(slowPeriod, "macdSlowPeriod");
+            validatePeriod(signalPeriod, "macdSignalPeriod");
+            if (fastPeriod >= slowPeriod) {
+                throw new IllegalArgumentException("macdFastPeriod must be less than macdSlowPeriod");
+            }
+        }
     }
 
     private static final class RollingChartState {
@@ -452,12 +539,19 @@ public class ChartRealtimeService {
             KlineData data = event.getKline();
             long openTime = data.getOpenTime();
             Boolean alreadyClosed = closedByOpenTime.get(openTime);
+            if (Boolean.TRUE.equals(alreadyClosed) && data.isClosed()) {
+                return CandleUpdate.skipped("DUPLICATE_CLOSED");
+            }
             if (Boolean.TRUE.equals(alreadyClosed) && !data.isClosed()) {
                 return CandleUpdate.skipped("CLOSED_TO_OPEN_REJECTED");
             }
             Long previousEventTime = eventTimeByOpenTime.get(openTime);
             if (previousEventTime != null && event.getEventTime() < previousEventTime) {
                 return CandleUpdate.skipped("STALE_EVENT_TIME");
+            }
+            Long latestOpenTime = lastOpenTime();
+            if (latestOpenTime != null && openTime < latestOpenTime) {
+                return CandleUpdate.skipped("OUT_OF_ORDER_OPEN_TIME");
             }
             Candle candle = new Candle(
                     openTime,
