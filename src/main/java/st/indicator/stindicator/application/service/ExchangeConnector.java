@@ -30,7 +30,9 @@ public interface ExchangeConnector {
             InvalidKeyException, InterruptedException;
     SymbolPrice getPrice(Map<String, String> params) throws IOException, NoSuchAlgorithmException,
             InvalidKeyException, InterruptedException;
-    List<Order> openOrders(Map<String, String> params);
+    default List<Order> openOrders(Map<String, String> params) {
+        throw new UnsupportedOperationException("open orders is not supported");
+    }
     Order orderDetail(Map<String, String> params);
     Order order(Map<String, String> params);
     Order cancelOrder(Map<String, String> params);

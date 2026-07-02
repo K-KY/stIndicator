@@ -24,6 +24,18 @@ public class SymbolMonitorDto {
     private BigDecimal bollingerDeviation;
     // 실시간 VWAP 계산 여부
     private Boolean vwap;
+    // 실시간 RSI 계산 기간
+    private Integer rsiPeriod;
+    // 실시간 MACD 단기 EMA 기간
+    private Integer macdFastPeriod;
+    // 실시간 MACD 장기 EMA 기간
+    private Integer macdSlowPeriod;
+    // 실시간 MACD signal EMA 기간
+    private Integer macdSignalPeriod;
+    // 실시간 ADX/DMI DI 기간
+    private Integer adxDiPeriod;
+    // 실시간 ADX smoothing 기간
+    private Integer adxSmoothingPeriod;
 
     public SymbolMonitorDto() {
     }
@@ -74,6 +86,30 @@ public class SymbolMonitorDto {
         return vwap;
     }
 
+    public Integer getRsiPeriod() {
+        return rsiPeriod;
+    }
+
+    public Integer getMacdFastPeriod() {
+        return macdFastPeriod;
+    }
+
+    public Integer getMacdSlowPeriod() {
+        return macdSlowPeriod;
+    }
+
+    public Integer getMacdSignalPeriod() {
+        return macdSignalPeriod;
+    }
+
+    public Integer getAdxDiPeriod() {
+        return adxDiPeriod;
+    }
+
+    public Integer getAdxSmoothingPeriod() {
+        return adxSmoothingPeriod;
+    }
+
     public void setType(String type) {
         this.type = type;
     }
@@ -112,5 +148,29 @@ public class SymbolMonitorDto {
 
     public void setVwap(Boolean vwap) {
         this.vwap = vwap;
+    }
+
+    public void setRsiPeriod(Integer rsiPeriod) {
+        this.rsiPeriod = rsiPeriod;
+    }
+
+    public void setMacdFastPeriod(Integer macdFastPeriod) {
+        this.macdFastPeriod = macdFastPeriod;
+    }
+
+    public void setMacdSlowPeriod(Integer macdSlowPeriod) {
+        this.macdSlowPeriod = macdSlowPeriod;
+    }
+
+    public void setMacdSignalPeriod(Integer macdSignalPeriod) {
+        this.macdSignalPeriod = macdSignalPeriod;
+    }
+
+    public void setAdxDiPeriod(Integer adxDiPeriod) {
+        this.adxDiPeriod = adxDiPeriod;
+    }
+
+    public void setAdxSmoothingPeriod(Integer adxSmoothingPeriod) {
+        this.adxSmoothingPeriod = adxSmoothingPeriod;
     }
 }
