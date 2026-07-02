@@ -36,6 +36,7 @@ public class ChartService {
     private static final int MAX_PERIOD_COUNT = 20;
     private static final int MAX_WARMUP = 900;
     private static final int MAX_FETCH_LIMIT = 1000;
+    private static final int INDICATOR_RESPONSE_SCALE = 8;
     private static final Set<String> SUPPORTED_INTERVALS = Set.of("1m", "5m", "15m", "1h", "4h", "1d");
     private static final Duration LATEST_TTL = Duration.ofSeconds(20);
     private static final Duration HISTORY_TTL = Duration.ofMinutes(10);
@@ -731,20 +732,38 @@ public class ChartService {
         return nanos / 1_000_000.0;
     }
 
+    private static BigDecimal responseDecimal(BigDecimal value) {
+        if (value == null) {
+            return null;
+        }
+        return value.setScale(INDICATOR_RESPONSE_SCALE, RoundingMode.HALF_UP);
+    }
+
     public interface TimedPoint {
         Long time();
     }
 
     public record IndicatorPoint(Long time, BigDecimal value) implements TimedPoint {
+        public IndicatorPoint {
+            value = responseDecimal(value);
+        }
     }
 
     public record MovingAverageSeries(int period, List<IndicatorPoint> points) {
     }
 
     public record BollingerPoint(Long time, BigDecimal middle, BigDecimal upper, BigDecimal lower) implements TimedPoint {
+        public BollingerPoint {
+            middle = responseDecimal(middle);
+            upper = responseDecimal(upper);
+            lower = responseDecimal(lower);
+        }
     }
 
     public record BollingerBandsSeries(int period, BigDecimal deviation, List<BollingerPoint> points) {
+        public BollingerBandsSeries {
+            deviation = responseDecimal(deviation);
+        }
     }
 
     public record VwapSeries(List<IndicatorPoint> points) {
@@ -754,12 +773,22 @@ public class ChartService {
     }
 
     public record MacdPoint(Long time, BigDecimal macd, BigDecimal signal, BigDecimal histogram) implements TimedPoint {
+        public MacdPoint {
+            macd = responseDecimal(macd);
+            signal = responseDecimal(signal);
+            histogram = responseDecimal(histogram);
+        }
     }
 
     public record MacdSeries(int fastPeriod, int slowPeriod, int signalPeriod, List<MacdPoint> points) {
     }
 
     public record AdxDmiPoint(Long time, BigDecimal adx, BigDecimal plusDi, BigDecimal minusDi) implements TimedPoint {
+        public AdxDmiPoint {
+            adx = responseDecimal(adx);
+            plusDi = responseDecimal(plusDi);
+            minusDi = responseDecimal(minusDi);
+        }
     }
 
     public record AdxDmiSeries(int diPeriod, int adxSmoothingPeriod, List<AdxDmiPoint> points) {
