@@ -46,6 +46,10 @@ public class ChartRequestDto {
     private Integer adxDiPeriod;
     @Schema(description = "ADX smoothing 기간", example = "14")
     private Integer adxSmoothingPeriod;
+    @Schema(description = "시그널 판정 설정. 색상 등 프론트 표현 설정은 포함하지 않는다.")
+    private String signalConfig;
+    @Schema(description = "시그널 판정 설정 버전. 스타일만 바뀐 경우 유지된다.", example = "123456")
+    private Long signalConfigVersion;
 
     public String getSymbol() { return symbol; }
     public String getInterval() { return interval; }
@@ -67,6 +71,8 @@ public class ChartRequestDto {
     public Integer getMacdSignalPeriod() { return macdSignalPeriod; }
     public Integer getAdxDiPeriod() { return adxDiPeriod; }
     public Integer getAdxSmoothingPeriod() { return adxSmoothingPeriod; }
+    public String getSignalConfig() { return signalConfig; }
+    public Long getSignalConfigVersion() { return signalConfigVersion; }
 
     public void setSymbol(String symbol) { this.symbol = symbol; }
     public void setInterval(String interval) { this.interval = interval; }
@@ -88,4 +94,6 @@ public class ChartRequestDto {
     public void setMacdSignalPeriod(Integer macdSignalPeriod) { this.macdSignalPeriod = macdSignalPeriod; }
     public void setAdxDiPeriod(Integer adxDiPeriod) { this.adxDiPeriod = adxDiPeriod; }
     public void setAdxSmoothingPeriod(Integer adxSmoothingPeriod) { this.adxSmoothingPeriod = adxSmoothingPeriod; }
+    public void setSignalConfig(String signalConfig) { this.signalConfig = signalConfig; }
+    public void setSignalConfigVersion(Long signalConfigVersion) { this.signalConfigVersion = signalConfigVersion; }
 }

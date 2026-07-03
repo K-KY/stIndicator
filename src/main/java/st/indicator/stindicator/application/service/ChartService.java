@@ -6,8 +6,11 @@ import org.springframework.stereotype.Service;
 import st.indicator.stindicator.application.exception.CandleFetchFailException;
 import st.indicator.stindicator.domain.utils.candle.Candle;
 import st.indicator.stindicator.presentation.dto.ChartCandleResponseDto;
+import st.indicator.stindicator.presentation.dto.ChartIndicatorSignalsDto;
 import st.indicator.stindicator.presentation.dto.ChartRequestDto;
 import st.indicator.stindicator.presentation.dto.ChartResponseDto;
+import st.indicator.stindicator.presentation.dto.ChartSignalConfigDto;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -39,10 +42,12 @@ public class ChartService {
     private static final int INDICATOR_RESPONSE_SCALE = 8;
     private static final Set<String> SUPPORTED_INTERVALS = Set.of("1m", "5m", "15m", "1h", "4h", "1d");
     private static final Duration LATEST_TTL = Duration.ofSeconds(20);
-    private static final Duration HISTORY_TTL = Duration.ofMinutes(10);
+    private static final Duration HISTORY_TTL = Duration.ofHours(1);
     private static final int MAX_CACHE_ENTRIES = 256;
 
     private final ExchangeConnector exchangeConnector;
+    private final ChartSignalEvaluationService signalEvaluationService = new ChartSignalEvaluationService();
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private final Map<ChartCacheKey, CachedChart> cache = new ConcurrentHashMap<>();
 
     public ChartService(ExchangeConnector exchangeConnector) {
@@ -89,7 +94,7 @@ public class ChartService {
             boolean hasPreviousPage = visibleCandidates.size() > query.limit();
             List<Candle> visible = visibleWindow(visibleCandidates, query);
             long visibleOpenTime = visible.isEmpty() ? Long.MAX_VALUE : visible.getFirst().getOpenTime();
-            Map<String, Object> indicators = calculateIndicators(fetched, visibleOpenTime, query);
+            CalculationResult calculation = calculateIndicators(fetched, visibleOpenTime, query);
             long calculatedAt = System.nanoTime();
             Long nextBefore = visible.isEmpty() ? null : visible.getFirst().getOpenTime();
             Long nextAfter = visible.isEmpty() ? null : visible.getLast().getOpenTime();
@@ -102,7 +107,8 @@ public class ChartService {
                     query.symbol(),
                     query.interval(),
                     visible.stream().map(ChartCandleResponseDto::from).toList(),
-                    indicators,
+                    calculation.indicators(),
+                    calculation.signals(),
                     hasOlder,
                     hasOlder,
                     hasNewer,
@@ -173,11 +179,15 @@ public class ChartService {
         return new ArrayList<>(byOpenTime.values());
     }
 
-    private Map<String, Object> calculateIndicators(List<Candle> candles, long visibleOpenTime, ChartQuery query) {
+    private CalculationResult calculateIndicators(List<Candle> candles, long visibleOpenTime, ChartQuery query) {
         Map<String, Object> result = new LinkedHashMap<>();
         if (!query.hasIndicators()) {
-            return result;
+            return new CalculationResult(result, null);
         }
+        List<IndicatorPoint> vwap = List.of();
+        List<IndicatorPoint> rsi = List.of();
+        List<MacdPoint> macd = List.of();
+        List<AdxDmiPoint> adxDmi = List.of();
         if (!query.smaPeriods().isEmpty()) {
             List<MovingAverageSeries> smaSeries = query.smaPeriods().stream()
                     .map(period -> new MovingAverageSeries(period, visible(smaPoints(candles, period), visibleOpenTime)))
@@ -198,35 +208,43 @@ public class ChartService {
             ));
         }
         if (query.vwap()) {
-            result.put("vwap", new VwapSeries(visible(vwapPoints(candles), visibleOpenTime)));
+            vwap = vwapPoints(candles);
+            result.put("vwap", new VwapSeries(visible(vwap, visibleOpenTime)));
         }
         if (query.rsiEnabled()) {
             long startedAt = System.nanoTime();
-            result.put("rsi", new RsiSeries(query.rsiPeriod(), visible(rsiPoints(candles, query.rsiPeriod()), visibleOpenTime)));
+            rsi = rsiPoints(candles, query.rsiPeriod());
+            result.put("rsi", new RsiSeries(query.rsiPeriod(), visible(rsi, visibleOpenTime)));
             log.debug("chart RSI calculated period={}, ms={}", query.rsiPeriod(), millis(System.nanoTime() - startedAt));
         }
         if (query.macdEnabled()) {
             long startedAt = System.nanoTime();
+            macd = macdPoints(candles, query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod());
             result.put("macd", new MacdSeries(
                     query.macdFastPeriod(),
                     query.macdSlowPeriod(),
                     query.macdSignalPeriod(),
-                    visible(macdPoints(candles, query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod()), visibleOpenTime)
+                    visible(macd, visibleOpenTime)
             ));
             log.debug("chart MACD calculated fast={}, slow={}, signal={}, ms={}",
                     query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod(), millis(System.nanoTime() - startedAt));
         }
         if (query.adxDmiEnabled()) {
             long startedAt = System.nanoTime();
+            adxDmi = adxDmiPoints(candles, query.adxDiPeriod(), query.adxSmoothingPeriod());
             result.put("adxDmi", new AdxDmiSeries(
                     query.adxDiPeriod(),
                     query.adxSmoothingPeriod(),
-                    visible(adxDmiPoints(candles, query.adxDiPeriod(), query.adxSmoothingPeriod()), visibleOpenTime)
+                    visible(adxDmi, visibleOpenTime)
             ));
             log.debug("chart ADX/DMI calculated di={}, smoothing={}, ms={}",
                     query.adxDiPeriod(), query.adxSmoothingPeriod(), millis(System.nanoTime() - startedAt));
         }
-        return result;
+        ChartIndicatorSignalsDto signals = query.signalConfig().enabled()
+                ? signalEvaluationService.evaluate(candles, vwap, macd, rsi, adxDmi,
+                query.requestedSignalConfig(), query.signalConfigVersion(), visibleOpenTime)
+                : null;
+        return new CalculationResult(result, signals);
     }
 
     public List<IndicatorPoint> smaPoints(List<Candle> candles, int period) {
@@ -568,6 +586,7 @@ public class ChartService {
             int sessionWarmup = intervalMillis <= 0 ? 0 : (int) Math.min(MAX_WARMUP, Duration.ofDays(1).toMillis() / intervalMillis);
             warmup = Math.max(warmup, sessionWarmup);
         }
+        warmup = Math.max(warmup, query.signalConfig().extraWarmup());
         return Math.min(MAX_WARMUP, Math.max(0, warmup));
     }
 
@@ -651,6 +670,20 @@ public class ChartService {
         if (bollingerDeviation.compareTo(new BigDecimal("0.1")) < 0 || bollingerDeviation.compareTo(BigDecimal.TEN) > 0) {
             throw new IllegalArgumentException("bollingerDeviation은 0.1 이상 10 이하의 숫자여야 합니다.");
         }
+        ChartSignalConfigDto requestedSignalConfig = parseSignalConfig(request.getSignalConfig());
+        ChartSignalEvaluationService.NormalizedConfig signalConfig = signalEvaluationService.normalize(requestedSignalConfig);
+        if (signalConfig.vwap() != null && !Boolean.TRUE.equals(request.getVwap())) {
+            throw new IllegalArgumentException("signalConfig.vwap은 VWAP 지표가 활성화되어야 사용할 수 있습니다.");
+        }
+        if (signalConfig.rsi() != null && !rsiEnabled) {
+            throw new IllegalArgumentException("signalConfig.rsi는 RSI 지표가 활성화되어야 사용할 수 있습니다.");
+        }
+        if (signalConfig.macd() != null && !macdEnabled) {
+            throw new IllegalArgumentException("signalConfig.macd는 MACD 지표가 활성화되어야 사용할 수 있습니다.");
+        }
+        if (signalConfig.adxDmi() != null && !adxDmiEnabled) {
+            throw new IllegalArgumentException("signalConfig.adxDmi는 ADX/DMI 지표가 활성화되어야 사용할 수 있습니다.");
+        }
         return new ChartQuery(
                 symbol,
                 interval,
@@ -672,8 +705,22 @@ public class ChartService {
                 macdSignalPeriod,
                 adxDmiEnabled,
                 adxDiPeriod,
-                adxSmoothingPeriod
+                adxSmoothingPeriod,
+                requestedSignalConfig,
+                signalConfig,
+                request.getSignalConfigVersion() == null ? 0L : request.getSignalConfigVersion()
         );
+    }
+
+    private ChartSignalConfigDto parseSignalConfig(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, ChartSignalConfigDto.class);
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException("signalConfig는 유효한 JSON이어야 합니다.", error);
+        }
     }
 
     private boolean containsLegacyIndicator(String indicators, String name) {
@@ -824,7 +871,10 @@ public class ChartService {
             int macdSignalPeriod,
             boolean adxDmiEnabled,
             int adxDiPeriod,
-            int adxSmoothingPeriod
+            int adxSmoothingPeriod,
+            ChartSignalConfigDto requestedSignalConfig,
+            ChartSignalEvaluationService.NormalizedConfig signalConfig,
+            long signalConfigVersion
     ) {
         private boolean hasIndicators() {
             return !emaPeriods.isEmpty() || !smaPeriods.isEmpty() || bollingerEnabled || vwap
@@ -853,7 +903,9 @@ public class ChartService {
             int macdSignalPeriod,
             boolean adxDmiEnabled,
             int adxDiPeriod,
-            int adxSmoothingPeriod
+            int adxSmoothingPeriod,
+            ChartSignalEvaluationService.NormalizedConfig signalConfig,
+            long signalConfigVersion
     ) {
         private static ChartCacheKey from(ChartQuery query) {
             return new ChartCacheKey(
@@ -862,9 +914,13 @@ public class ChartService {
                     query.bollingerPeriod(), query.bollingerDeviation().stripTrailingZeros().toPlainString(), query.vwap(),
                     query.rsiEnabled(), query.rsiPeriod(),
                     query.macdEnabled(), query.macdFastPeriod(), query.macdSlowPeriod(), query.macdSignalPeriod(),
-                    query.adxDmiEnabled(), query.adxDiPeriod(), query.adxSmoothingPeriod()
+                    query.adxDmiEnabled(), query.adxDiPeriod(), query.adxSmoothingPeriod(),
+                    query.signalConfig(), query.signalConfigVersion()
             );
         }
+    }
+
+    private record CalculationResult(Map<String, Object> indicators, ChartIndicatorSignalsDto signals) {
     }
 
     private record CachedChart(ChartResponseDto response, long expiresAt, long createdAt) {

@@ -8,6 +8,7 @@ public record ChartResponseDto(
         String interval,
         List<ChartCandleResponseDto> candles,
         Map<String, Object> indicators,
+        ChartIndicatorSignalsDto indicatorSignals,
         boolean hasMore,
         boolean hasOlder,
         boolean hasNewer,
