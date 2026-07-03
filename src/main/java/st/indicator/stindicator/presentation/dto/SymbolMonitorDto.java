@@ -36,6 +36,10 @@ public class SymbolMonitorDto {
     private Integer adxDiPeriod;
     // 실시간 ADX smoothing 기간
     private Integer adxSmoothingPeriod;
+    // 실시간 시그널 판정에만 사용하는 설정
+    private ChartSignalConfigDto signalConfig;
+    // 판정 설정이 바뀐 경우에만 달라지는 버전
+    private Long signalConfigVersion;
 
     public SymbolMonitorDto() {
     }
@@ -110,6 +114,14 @@ public class SymbolMonitorDto {
         return adxSmoothingPeriod;
     }
 
+    public ChartSignalConfigDto getSignalConfig() {
+        return signalConfig;
+    }
+
+    public Long getSignalConfigVersion() {
+        return signalConfigVersion;
+    }
+
     public void setType(String type) {
         this.type = type;
     }
@@ -172,5 +184,13 @@ public class SymbolMonitorDto {
 
     public void setAdxSmoothingPeriod(Integer adxSmoothingPeriod) {
         this.adxSmoothingPeriod = adxSmoothingPeriod;
+    }
+
+    public void setSignalConfig(ChartSignalConfigDto signalConfig) {
+        this.signalConfig = signalConfig;
+    }
+
+    public void setSignalConfigVersion(Long signalConfigVersion) {
+        this.signalConfigVersion = signalConfigVersion;
     }
 }

@@ -9,6 +9,11 @@ import st.indicator.stindicator.domain.utils.candle.Candle;
 import st.indicator.stindicator.infra.ws.dto.binance.KlineData;
 import st.indicator.stindicator.infra.ws.dto.binance.KlineEventDTO;
 import st.indicator.stindicator.presentation.dto.SymbolMonitorDto;
+import st.indicator.stindicator.presentation.dto.ChartIndicatorSignalsDto;
+import st.indicator.stindicator.presentation.dto.ChartSignalConfigDto;
+import st.indicator.stindicator.presentation.dto.IndicatorSignalEventDto;
+import st.indicator.stindicator.presentation.dto.IndicatorSignalSeriesDto;
+import st.indicator.stindicator.presentation.dto.IndicatorSignalStateDto;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -41,6 +46,8 @@ public class ChartRealtimeService {
     private final ExchangeConnector exchangeConnector;
     private final ChartService chartService;
     private final ObjectMapper objectMapper;
+    private final ChartSignalEvaluationService signalEvaluationService = new ChartSignalEvaluationService();
+    private final AtomicLong connectionGeneration = new AtomicLong();
     private final Map<String, ChartSubscription> subscriptions = new ConcurrentHashMap<>();
     private final Map<String, Set<String>> streamSubscriptions = new ConcurrentHashMap<>();
     private final Map<String, Set<String>> sessionSubscriptions = new ConcurrentHashMap<>();
@@ -62,6 +69,7 @@ public class ChartRealtimeService {
                 ? UUID.randomUUID().toString()
                 : request.getSubscriptionId();
         long configVersion = request.getConfigVersion() == null ? 1L : request.getConfigVersion();
+        long signalConfigVersion = request.getSignalConfigVersion() == null ? 0L : request.getSignalConfigVersion();
 
         unsubscribe(session, request);
         if (sessionSubscriptions.getOrDefault(session.getId(), Set.of()).size() >= MAX_CHART_SUBSCRIPTIONS_PER_SESSION) {
@@ -75,6 +83,9 @@ public class ChartRealtimeService {
                 interval,
                 streamKey,
                 configVersion,
+                signalConfigVersion,
+                request.getSignalConfig(),
+                connectionGeneration.incrementAndGet(),
                 config,
                 new AtomicLong()
         );
@@ -241,6 +252,8 @@ public class ChartRealtimeService {
         payload.put("symbol", subscription.symbol());
         payload.put("interval", subscription.interval());
         payload.put("configVersion", subscription.configVersion());
+        payload.put("signalConfigVersion", subscription.signalConfigVersion());
+        payload.put("connectionGeneration", subscription.connectionGeneration());
         payload.put("lastOpenTime", lastOpenTime);
         send(subscription, payload, eventType);
     }
@@ -253,6 +266,8 @@ public class ChartRealtimeService {
         payload.put("symbol", subscription.symbol());
         payload.put("interval", subscription.interval());
         payload.put("configVersion", subscription.configVersion());
+        payload.put("signalConfigVersion", subscription.signalConfigVersion());
+        payload.put("connectionGeneration", subscription.connectionGeneration());
         payload.put("sequence", subscription.sequence().incrementAndGet());
         payload.put("candle", Map.of(
                 "openTime", candle.getOpenTime(),
@@ -265,7 +280,53 @@ public class ChartRealtimeService {
                 "closed", closed
         ));
         payload.put("indicators", indicators(subscription.config(), candle.getOpenTime(), state.candles()));
+        payload.put("indicatorSignals", indicatorSignals(subscription, candle.getOpenTime(), state.candles()));
         send(subscription, payload, "chartRealtimeUpdate");
+    }
+
+    private Map<String, Object> indicatorSignals(ChartSubscription subscription, long openTime, List<Candle> candles) {
+        ChartSignalConfigDto config = subscription.signalConfig();
+        if (config == null) {
+            return Map.of();
+        }
+        ChartIndicatorConfig indicators = subscription.config();
+        ChartIndicatorSignalsDto evaluated = signalEvaluationService.evaluate(
+                candles,
+                indicators.vwap() ? chartService.vwapPoints(candles) : List.of(),
+                indicators.macdFastPeriod() == null ? List.of() : chartService.macdPoints(
+                        candles, indicators.macdFastPeriod(), indicators.macdSlowPeriod(), indicators.macdSignalPeriod()),
+                indicators.rsiPeriod() == null ? List.of() : chartService.rsiPoints(candles, indicators.rsiPeriod()),
+                indicators.adxDiPeriod() == null ? List.of() : chartService.adxDmiPoints(
+                        candles, indicators.adxDiPeriod(), indicators.adxSmoothingPeriod()),
+                config,
+                subscription.signalConfigVersion(),
+                openTime
+        );
+        Map<String, Object> result = new LinkedHashMap<>();
+        putSignalSnapshot(result, "vwap", evaluated.vwap(), openTime);
+        putSignalSnapshot(result, "macd", evaluated.macd(), openTime);
+        putSignalSnapshot(result, "rsi", evaluated.rsi(), openTime);
+        putSignalSnapshot(result, "adxDmi", evaluated.adxDmi(), openTime);
+        return result;
+    }
+
+    private void putSignalSnapshot(Map<String, Object> target, String name,
+                                   IndicatorSignalSeriesDto series, long openTime) {
+        if (series == null) {
+            return;
+        }
+        IndicatorSignalStateDto state = series.states().stream()
+                .filter(point -> point.time() == openTime)
+                .reduce((first, second) -> second)
+                .orElse(null);
+        List<IndicatorSignalEventDto> events = series.events().stream()
+                .filter(event -> event.time() == openTime || event.originTime() == openTime)
+                .toList();
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("signalConfigVersion", series.signalConfigVersion());
+        snapshot.put("state", state);
+        snapshot.put("events", events);
+        target.put(name, snapshot);
     }
 
     private Map<String, Object> indicators(ChartIndicatorConfig config, long openTime, List<Candle> candles) {
@@ -431,6 +492,9 @@ public class ChartRealtimeService {
             String interval,
             String streamKey,
             long configVersion,
+            long signalConfigVersion,
+            ChartSignalConfigDto signalConfig,
+            long connectionGeneration,
             ChartIndicatorConfig config,
             AtomicLong sequence
     ) {
