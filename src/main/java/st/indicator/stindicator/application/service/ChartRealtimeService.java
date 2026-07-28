@@ -151,7 +151,8 @@ public class ChartRealtimeService {
         if (subscriptionIds == null || subscriptionIds.isEmpty()) {
             return;
         }
-        RollingChartState state = states.computeIfAbsent(streamKey, ignored -> seedState(event.getSymbol(), event.getKline().getInterval()));
+        RollingChartState state = states.computeIfAbsent(streamKey,
+                ignored -> seedState(event.getSymbol(), event.getKline().getInterval()));
         backfillMissingCandlesIfNeeded(streamKey, state, event);
         CandleUpdate update = state.apply(event);
         if (!update.applied()) {
@@ -259,6 +260,7 @@ public class ChartRealtimeService {
     }
 
     private void sendUpdate(ChartSubscription subscription, Candle candle, boolean closed, RollingChartState state) {
+        RealtimeIndicatorCalculation calculation = calculateRealtimeIndicators(subscription.config(), state.candles());
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("eventType", "CHART_REALTIME_UPDATE");
         payload.put("type", "CHART_REALTIME_UPDATE");
@@ -279,25 +281,46 @@ public class ChartRealtimeService {
                 "volume", candle.getVolume().toPlainString(),
                 "closed", closed
         ));
-        payload.put("indicators", indicators(subscription.config(), candle.getOpenTime(), state.candles()));
-        payload.put("indicatorSignals", indicatorSignals(subscription, candle.getOpenTime(), state.candles()));
+        payload.put("indicators", indicators(subscription.config(), candle.getOpenTime(), calculation));
+        payload.put("indicatorSignals", indicatorSignals(subscription, candle.getOpenTime(), state.candles(), calculation));
         send(subscription, payload, "chartRealtimeUpdate");
     }
 
-    private Map<String, Object> indicatorSignals(ChartSubscription subscription, long openTime, List<Candle> candles) {
+    private RealtimeIndicatorCalculation calculateRealtimeIndicators(ChartIndicatorConfig config, List<Candle> candles) {
+        Map<Integer, List<ChartService.IndicatorPoint>> ema = new LinkedHashMap<>();
+        for (Integer period : config.emaPeriods()) {
+            ema.put(period, chartService.emaPoints(candles, period));
+        }
+        Map<Integer, List<ChartService.IndicatorPoint>> sma = new LinkedHashMap<>();
+        for (Integer period : config.smaPeriods()) {
+            sma.put(period, chartService.smaPoints(candles, period));
+        }
+        List<ChartService.BollingerPoint> bollinger = config.bollingerPeriod() == null
+                ? List.of()
+                : chartService.bollingerPoints(candles, config.bollingerPeriod(), config.bollingerDeviation());
+        List<ChartService.IndicatorPoint> vwap = config.vwap() ? chartService.vwapPoints(candles) : List.of();
+        List<ChartService.IndicatorPoint> rsi = config.rsiPeriod() == null ? List.of() : chartService.rsiPoints(candles, config.rsiPeriod());
+        List<ChartService.MacdPoint> macd = config.macdFastPeriod() == null
+                ? List.of()
+                : chartService.macdPoints(candles, config.macdFastPeriod(), config.macdSlowPeriod(), config.macdSignalPeriod());
+        List<ChartService.AdxDmiPoint> adxDmi = config.adxDiPeriod() == null
+                ? List.of()
+                : chartService.adxDmiPoints(candles, config.adxDiPeriod(), config.adxSmoothingPeriod());
+        return new RealtimeIndicatorCalculation(ema, sma, bollinger, vwap, rsi, macd, adxDmi);
+    }
+
+    private Map<String, Object> indicatorSignals(ChartSubscription subscription, long openTime, List<Candle> candles,
+                                                 RealtimeIndicatorCalculation calculation) {
         ChartSignalConfigDto config = subscription.signalConfig();
         if (config == null) {
             return Map.of();
         }
-        ChartIndicatorConfig indicators = subscription.config();
         ChartIndicatorSignalsDto evaluated = signalEvaluationService.evaluate(
                 candles,
-                indicators.vwap() ? chartService.vwapPoints(candles) : List.of(),
-                indicators.macdFastPeriod() == null ? List.of() : chartService.macdPoints(
-                        candles, indicators.macdFastPeriod(), indicators.macdSlowPeriod(), indicators.macdSignalPeriod()),
-                indicators.rsiPeriod() == null ? List.of() : chartService.rsiPoints(candles, indicators.rsiPeriod()),
-                indicators.adxDiPeriod() == null ? List.of() : chartService.adxDmiPoints(
-                        candles, indicators.adxDiPeriod(), indicators.adxSmoothingPeriod()),
+                calculation.vwap(),
+                calculation.macd(),
+                calculation.rsi(),
+                calculation.adxDmi(),
                 config,
                 subscription.signalConfigVersion(),
                 openTime
@@ -315,13 +338,8 @@ public class ChartRealtimeService {
         if (series == null) {
             return;
         }
-        IndicatorSignalStateDto state = series.states().stream()
-                .filter(point -> point.time() == openTime)
-                .reduce((first, second) -> second)
-                .orElse(null);
-        List<IndicatorSignalEventDto> events = series.events().stream()
-                .filter(event -> event.time() == openTime || event.originTime() == openTime)
-                .toList();
+        IndicatorSignalStateDto state = latestSignalState(series.states(), openTime);
+        List<IndicatorSignalEventDto> events = signalEventsAt(series.events(), openTime);
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("signalConfigVersion", series.signalConfigVersion());
         snapshot.put("state", state);
@@ -329,108 +347,136 @@ public class ChartRealtimeService {
         target.put(name, snapshot);
     }
 
-    private Map<String, Object> indicators(ChartIndicatorConfig config, long openTime, List<Candle> candles) {
+    private IndicatorSignalStateDto latestSignalState(List<IndicatorSignalStateDto> states, long openTime) {
+        for (int index = states.size() - 1; index >= 0; index--) {
+            IndicatorSignalStateDto state = states.get(index);
+            if (state.time() == openTime) {
+                return state;
+            }
+        }
+        return null;
+    }
+
+    private List<IndicatorSignalEventDto> signalEventsAt(List<IndicatorSignalEventDto> events, long openTime) {
+        List<IndicatorSignalEventDto> result = new ArrayList<>();
+        for (IndicatorSignalEventDto event : events) {
+            if (event.time() == openTime || event.originTime() == openTime) {
+                result.add(event);
+            }
+        }
+        return result;
+    }
+
+    private Map<String, Object> indicators(ChartIndicatorConfig config, long openTime, RealtimeIndicatorCalculation calculation) {
         Map<String, Object> result = new LinkedHashMap<>();
         if (!config.emaPeriods().isEmpty()) {
-            List<Map<String, Object>> ema = config.emaPeriods().stream()
-                    .map(period -> latestPoint(chartService.emaPoints(candles, period), period, openTime))
-                    .filter(point -> !point.isEmpty())
-                    .toList();
+            List<Map<String, Object>> ema = new ArrayList<>();
+            for (Integer period : config.emaPeriods()) {
+                Map<String, Object> point = latestPoint(calculation.ema().getOrDefault(period, List.of()), period, openTime);
+                if (!point.isEmpty()) {
+                    ema.add(point);
+                }
+            }
             if (!ema.isEmpty()) {
                 result.put("ema", ema);
             }
         }
         if (!config.smaPeriods().isEmpty()) {
-            List<Map<String, Object>> sma = config.smaPeriods().stream()
-                    .map(period -> latestPoint(chartService.smaPoints(candles, period), period, openTime))
-                    .filter(point -> !point.isEmpty())
-                    .toList();
+            List<Map<String, Object>> sma = new ArrayList<>();
+            for (Integer period : config.smaPeriods()) {
+                Map<String, Object> point = latestPoint(calculation.sma().getOrDefault(period, List.of()), period, openTime);
+                if (!point.isEmpty()) {
+                    sma.add(point);
+                }
+            }
             if (!sma.isEmpty()) {
                 result.put("sma", sma);
             }
         }
         if (config.bollingerPeriod() != null) {
-            chartService.bollingerPoints(candles, config.bollingerPeriod(), config.bollingerDeviation())
-                    .stream()
-                    .filter(point -> point.time() == openTime)
-                    .reduce((first, second) -> second)
-                    .ifPresent(point -> result.put("bollingerBands", Map.of(
+            ChartService.BollingerPoint point = latestTimedPoint(calculation.bollinger(), openTime);
+            if (point != null) {
+                result.put("bollingerBands", Map.of(
                             "period", config.bollingerPeriod(),
                             "deviation", config.bollingerDeviation().toPlainString(),
                             "time", point.time(),
                             "middle", point.middle().toPlainString(),
                             "upper", point.upper().toPlainString(),
                             "lower", point.lower().toPlainString()
-                    )));
+                    ));
+            }
         }
         if (config.vwap()) {
-            chartService.vwapPoints(candles)
-                    .stream()
-                    .filter(point -> point.time() == openTime)
-                    .reduce((first, second) -> second)
-                    .ifPresent(point -> result.put("vwap", Map.of(
+            ChartService.IndicatorPoint point = latestTimedPoint(calculation.vwap(), openTime);
+            if (point != null) {
+                result.put("vwap", Map.of(
                             "time", point.time(),
                             "value", point.value().toPlainString()
-                    )));
+                    ));
+            }
         }
         if (config.rsiPeriod() != null) {
-            Map<String, Object> rsi = latestPoint(chartService.rsiPoints(candles, config.rsiPeriod()), config.rsiPeriod(), openTime);
+            Map<String, Object> rsi = latestPoint(calculation.rsi(), config.rsiPeriod(), openTime);
             if (!rsi.isEmpty()) {
                 result.put("rsi", rsi);
             }
         }
         if (config.macdFastPeriod() != null) {
-            chartService.macdPoints(candles, config.macdFastPeriod(), config.macdSlowPeriod(), config.macdSignalPeriod())
-                    .stream()
-                    .filter(point -> point.time() == openTime)
-                    .reduce((first, second) -> second)
-                    .ifPresent(point -> {
-                        Map<String, Object> macd = new LinkedHashMap<>();
-                        macd.put("fastPeriod", config.macdFastPeriod());
-                        macd.put("slowPeriod", config.macdSlowPeriod());
-                        macd.put("signalPeriod", config.macdSignalPeriod());
-                        macd.put("time", point.time());
-                        macd.put("macd", point.macd().toPlainString());
-                        if (point.signal() != null) {
-                            macd.put("signal", point.signal().toPlainString());
-                        }
-                        if (point.histogram() != null) {
-                            macd.put("histogram", point.histogram().toPlainString());
-                        }
-                        result.put("macd", macd);
-                    });
+            ChartService.MacdPoint point = latestTimedPoint(calculation.macd(), openTime);
+            if (point != null) {
+                Map<String, Object> macd = new LinkedHashMap<>();
+                macd.put("fastPeriod", config.macdFastPeriod());
+                macd.put("slowPeriod", config.macdSlowPeriod());
+                macd.put("signalPeriod", config.macdSignalPeriod());
+                macd.put("time", point.time());
+                macd.put("macd", point.macd().toPlainString());
+                if (point.signal() != null) {
+                    macd.put("signal", point.signal().toPlainString());
+                }
+                if (point.histogram() != null) {
+                    macd.put("histogram", point.histogram().toPlainString());
+                }
+                result.put("macd", macd);
+            }
         }
         if (config.adxDiPeriod() != null) {
-            chartService.adxDmiPoints(candles, config.adxDiPeriod(), config.adxSmoothingPeriod())
-                    .stream()
-                    .filter(point -> point.time() == openTime)
-                    .reduce((first, second) -> second)
-                    .ifPresent(point -> {
-                        Map<String, Object> adxDmi = new LinkedHashMap<>();
-                        adxDmi.put("diPeriod", config.adxDiPeriod());
-                        adxDmi.put("adxSmoothingPeriod", config.adxSmoothingPeriod());
-                        adxDmi.put("time", point.time());
-                        if (point.adx() != null) {
-                            adxDmi.put("adx", point.adx().toPlainString());
-                        }
-                        adxDmi.put("plusDi", point.plusDi().toPlainString());
-                        adxDmi.put("minusDi", point.minusDi().toPlainString());
-                        result.put("adxDmi", adxDmi);
-                    });
+            ChartService.AdxDmiPoint point = latestTimedPoint(calculation.adxDmi(), openTime);
+            if (point != null) {
+                Map<String, Object> adxDmi = new LinkedHashMap<>();
+                adxDmi.put("diPeriod", config.adxDiPeriod());
+                adxDmi.put("adxSmoothingPeriod", config.adxSmoothingPeriod());
+                adxDmi.put("time", point.time());
+                if (point.adx() != null) {
+                    adxDmi.put("adx", point.adx().toPlainString());
+                }
+                adxDmi.put("plusDi", point.plusDi().toPlainString());
+                adxDmi.put("minusDi", point.minusDi().toPlainString());
+                result.put("adxDmi", adxDmi);
+            }
         }
         return result;
     }
 
     private Map<String, Object> latestPoint(List<ChartService.IndicatorPoint> points, int period, long openTime) {
-        return points.stream()
-                .filter(point -> point.time() == openTime)
-                .reduce((first, second) -> second)
-                .<Map<String, Object>>map(point -> Map.of(
-                        "period", period,
-                        "time", point.time(),
-                        "value", point.value().toPlainString()
-                ))
-                .orElse(Map.of());
+        ChartService.IndicatorPoint point = latestTimedPoint(points, openTime);
+        if (point == null) {
+            return Map.of();
+        }
+        return Map.of(
+                "period", period,
+                "time", point.time(),
+                "value", point.value().toPlainString()
+        );
+    }
+
+    private <T extends ChartService.TimedPoint> T latestTimedPoint(List<T> points, long openTime) {
+        for (int index = points.size() - 1; index >= 0; index--) {
+            T point = points.get(index);
+            if (point.time() == openTime) {
+                return point;
+            }
+        }
+        return null;
     }
 
     private void send(ChartSubscription subscription, Map<String, Object> payload, String eventName) {
@@ -587,6 +633,17 @@ public class ChartRealtimeService {
                 throw new IllegalArgumentException("macdFastPeriod must be less than macdSlowPeriod");
             }
         }
+    }
+
+    private record RealtimeIndicatorCalculation(
+            Map<Integer, List<ChartService.IndicatorPoint>> ema,
+            Map<Integer, List<ChartService.IndicatorPoint>> sma,
+            List<ChartService.BollingerPoint> bollinger,
+            List<ChartService.IndicatorPoint> vwap,
+            List<ChartService.IndicatorPoint> rsi,
+            List<ChartService.MacdPoint> macd,
+            List<ChartService.AdxDmiPoint> adxDmi
+    ) {
     }
 
     private static final class RollingChartState {
