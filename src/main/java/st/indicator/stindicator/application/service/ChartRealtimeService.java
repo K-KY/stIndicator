@@ -31,6 +31,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 @Service
@@ -42,6 +43,7 @@ public class ChartRealtimeService {
     private static final int MAX_PERIOD = 1000;
     private static final int MAX_PERIOD_COUNT = 20;
     private static final int MAX_CHART_SUBSCRIPTIONS_PER_SESSION = 8;
+    private static final long REALTIME_INDICATOR_REFRESH_INTERVAL_MS = 2_000L;
 
     private final ExchangeConnector exchangeConnector;
     private final ChartService chartService;
@@ -87,7 +89,8 @@ public class ChartRealtimeService {
                 request.getSignalConfig(),
                 connectionGeneration.incrementAndGet(),
                 config,
-                new AtomicLong()
+                new AtomicLong(),
+                new AtomicReference<>()
         );
         subscriptions.put(subscriptionId, subscription);
         streamSubscriptions.computeIfAbsent(streamKey, ignored -> ConcurrentHashMap.newKeySet()).add(subscriptionId);
@@ -260,7 +263,7 @@ public class ChartRealtimeService {
     }
 
     private void sendUpdate(ChartSubscription subscription, Candle candle, boolean closed, RollingChartState state) {
-        RealtimeIndicatorCalculation calculation = calculateRealtimeIndicators(subscription.config(), state.candles());
+        RealtimePayload realtimePayload = realtimePayload(subscription, candle, closed, state);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("eventType", "CHART_REALTIME_UPDATE");
         payload.put("type", "CHART_REALTIME_UPDATE");
@@ -281,9 +284,28 @@ public class ChartRealtimeService {
                 "volume", candle.getVolume().toPlainString(),
                 "closed", closed
         ));
-        payload.put("indicators", indicators(subscription.config(), candle.getOpenTime(), calculation));
-        payload.put("indicatorSignals", indicatorSignals(subscription, candle.getOpenTime(), state.candles(), calculation));
+        payload.put("indicators", realtimePayload.indicators());
+        payload.put("indicatorSignals", realtimePayload.indicatorSignals());
         send(subscription, payload, "chartRealtimeUpdate");
+    }
+
+    private RealtimePayload realtimePayload(ChartSubscription subscription, Candle candle, boolean closed, RollingChartState state) {
+        long now = System.currentTimeMillis();
+        long openTime = candle.getOpenTime();
+        RealtimePayloadCache cached = subscription.realtimePayloadCache().get();
+        if (!closed
+                && cached != null
+                && cached.openTime() == openTime
+                && now - cached.calculatedAt() < REALTIME_INDICATOR_REFRESH_INTERVAL_MS) {
+            return new RealtimePayload(cached.indicators(), cached.indicatorSignals());
+        }
+
+        List<Candle> candles = state.candles();
+        RealtimeIndicatorCalculation calculation = calculateRealtimeIndicators(subscription.config(), candles);
+        Map<String, Object> indicators = indicators(subscription.config(), openTime, calculation);
+        Map<String, Object> indicatorSignals = indicatorSignals(subscription, openTime, candles, calculation);
+        subscription.realtimePayloadCache().set(new RealtimePayloadCache(openTime, now, indicators, indicatorSignals));
+        return new RealtimePayload(indicators, indicatorSignals);
     }
 
     private RealtimeIndicatorCalculation calculateRealtimeIndicators(ChartIndicatorConfig config, List<Candle> candles) {
@@ -542,7 +564,8 @@ public class ChartRealtimeService {
             ChartSignalConfigDto signalConfig,
             long connectionGeneration,
             ChartIndicatorConfig config,
-            AtomicLong sequence
+            AtomicLong sequence,
+            AtomicReference<RealtimePayloadCache> realtimePayloadCache
     ) {
     }
 
@@ -643,6 +666,20 @@ public class ChartRealtimeService {
             List<ChartService.IndicatorPoint> rsi,
             List<ChartService.MacdPoint> macd,
             List<ChartService.AdxDmiPoint> adxDmi
+    ) {
+    }
+
+    private record RealtimePayload(
+            Map<String, Object> indicators,
+            Map<String, Object> indicatorSignals
+    ) {
+    }
+
+    private record RealtimePayloadCache(
+            long openTime,
+            long calculatedAt,
+            Map<String, Object> indicators,
+            Map<String, Object> indicatorSignals
     ) {
     }
 
